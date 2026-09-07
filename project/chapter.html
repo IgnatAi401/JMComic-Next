@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="view-transition" content="same-origin" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
+    <title>JMComic · 漫画详情</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/chapter.css?v=20260902-mobile-meta-row1" />
+    <link rel="stylesheet" href="./style/jmcomic-next.css?v=20260902-mobile-actions-row1" />
+</head>
+<body>
+<div class="root">
+    <nav class="nav"></nav><nav class="mob-nav"></nav>
+    <div class="switch-server"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
+    <aside class="app-dock" data-current="chapter" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
+        <a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a><button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button>
+        <a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a><a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
+        <a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a><a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a>
+        <a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span><a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
+    </div></aside>
+
+    <main class="detail-page">
+        <div class="detail-loading glass-card"><div class="loading-icon"><i></i><span>正在获取漫画信息</span></div></div>
+
+        <section class="head detail-hero glass-card" hidden>
+            <div class="detail-backdrop"></div>
+            <div class="cover"><img src="./image/cover.png" alt="作品封面" /></div>
+            <div class="detail-kicker"><span class="content-state">漫画</span><span class="chapter-count">1 章</span></div>
+            <div class="comic-info">
+                <h1 class="title"><span class="title-text"></span><button class="title-translate" type="button" aria-label="将标题翻译为简体中文" aria-pressed="false" title="翻译为简体中文">译</button></h1><h2 class="author"></h2>
+                <div class="tags"></div><p class="introduction"></p>
+                <div class="actions">
+                    <div class="detail-primary-actions">
+                        <a class="primary-btn start-read" href="#" data-navigation="same-tab">开始阅读</a>
+                        <div class="detail-secondary-actions"><button class="ghost-btn like-action" type="button">♡ 喜欢</button><button class="ghost-btn favorite-action" type="button">＋ 收藏</button><button class="ghost-btn track-action" type="button">追踪连载</button></div>
+                    </div>
+                </div>
+            </div>
+            <div class="detail-feedback-panel">
+                <section class="detail-recommendation-feedback" aria-labelledby="detail-feedback-title">
+                    <header><div><span>个性化推荐</span><h2 id="detail-feedback-title">这本漫画合口味吗？</h2></div><small>五个维度分别保存，可随时修改</small></header>
+                    <div class="detail-feedback-row" data-feedback-reason="overall"><div class="detail-feedback-label"><strong>整体观感</strong><small>影响整本作品的综合特征</small></div><div class="feedback-choice"><button data-detail-feedback="interested" type="button" aria-pressed="false"><i aria-hidden="true">＋</i><span>感兴趣</span></button><button data-detail-feedback="not_interested" type="button" aria-pressed="false"><i aria-hidden="true">−</i><span>不感兴趣</span></button></div><span class="detail-feedback-state" aria-live="polite"></span></div>
+                    <div class="detail-feedback-row" data-feedback-reason="cover"><div class="detail-feedback-label"><strong>封面画风</strong><small>只训练封面视觉偏好</small></div><div class="feedback-choice"><button data-detail-feedback="interested" type="button" aria-pressed="false"><i aria-hidden="true">＋</i><span>感兴趣</span></button><button data-detail-feedback="not_interested" type="button" aria-pressed="false"><i aria-hidden="true">−</i><span>不感兴趣</span></button></div><span class="detail-feedback-state" aria-live="polite"></span></div>
+                    <div class="detail-feedback-row" data-feedback-reason="title"><div class="detail-feedback-label"><strong>标题预期</strong><small>只训练标题语义偏好</small></div><div class="feedback-choice"><button data-detail-feedback="interested" type="button" aria-pressed="false"><i aria-hidden="true">＋</i><span>感兴趣</span></button><button data-detail-feedback="not_interested" type="button" aria-pressed="false"><i aria-hidden="true">−</i><span>不感兴趣</span></button></div><span class="detail-feedback-state" aria-live="polite"></span></div>
+                    <div class="detail-feedback-row" data-feedback-reason="tag_mix"><div class="detail-feedback-label"><strong>标签组合</strong><small>只训练当前标签组合</small></div><div class="feedback-choice"><button data-detail-feedback="interested" type="button" aria-pressed="false"><i aria-hidden="true">＋</i><span>感兴趣</span></button><button data-detail-feedback="not_interested" type="button" aria-pressed="false"><i aria-hidden="true">−</i><span>不感兴趣</span></button></div><span class="detail-feedback-state" aria-live="polite"></span></div>
+                    <div class="detail-feedback-row" data-feedback-reason="author"><div class="detail-feedback-label"><strong>作者偏好</strong><small>只训练当前作者偏好</small></div><div class="feedback-choice"><button data-detail-feedback="interested" type="button" aria-pressed="false"><i aria-hidden="true">＋</i><span>感兴趣</span></button><button data-detail-feedback="not_interested" type="button" aria-pressed="false"><i aria-hidden="true">−</i><span>不感兴趣</span></button></div><span class="detail-feedback-state" aria-live="polite"></span></div>
+                </section>
+                <div class="evaluation glass-inset"><div class="likes"><small>喜欢</small><span>—</span></div><div class="views"><small>观看</small><span>—</span></div><div class="photos"><small>页数</small><span>—</span></div><div class="jm-id"><small>编号</small><span>—</span></div></div>
+            </div>
+        </section>
+
+        <div class="detail-layout" hidden>
+            <div class="detail-main-column">
+                <section class="chapter-panel glass-card">
+                    <div class="panel-heading"><div><span>章节</span><h2>选择阅读章节</h2></div></div>
+                    <div class="chapter-list"></div>
+                </section>
+
+                <section class="meta-panel glass-card">
+                    <div class="panel-heading"><div><span>信息</span><h2>作品资料</h2></div></div>
+                    <div class="metadata-grid">
+                        <div><small>上架日期</small><strong data-field="addtime">—</strong></div>
+                        <div><small>总页数</small><strong data-field="total_photos">—</strong></div>
+                        <div><small>评论</small><strong data-field="comment_total">—</strong></div>
+                        <div><small>系列编号</small><strong data-field="series_id">—</strong></div>
+                        <div><small>内容模式</small><strong data-field="is_aids">—</strong></div>
+                        <div><small>价格</small><strong data-field="price">—</strong></div>
+                        <div><small>购买状态</small><strong data-field="purchased">—</strong></div>
+                        <div class="wide-meta"><small>来源链接</small><strong data-field="real_link">—</strong></div>
+                    </div>
+                    <div class="taxonomy-row"><small>作品</small><div class="works-list"></div></div>
+                    <div class="taxonomy-row"><small>角色</small><div class="actors-list"></div></div>
+                </section>
+
+                <section class="local-rating-panel glass-card">
+                    <div class="panel-heading rating-heading"><div><span>我的评价</span><h2>给这本漫画打分</h2><p>只保存在本机，之后可以随时修改</p></div><output class="rating-value" aria-live="polite"><b class="rating-value-number">—</b><small>/ 10</small></output></div>
+                    <div class="rating-score-area">
+                        <div class="rating-score-control">
+                            <div class="rating-scale-labels" aria-hidden="true"><span>不推荐</span><span>非常优秀</span></div>
+                            <div class="rating-buttons" role="group" aria-label="作品总分，1到10分">
+                                <button data-score="1" type="button">1</button><button data-score="2" type="button">2</button><button data-score="3" type="button">3</button><button data-score="4" type="button">4</button><button data-score="5" type="button">5</button><button data-score="6" type="button">6</button><button data-score="7" type="button">7</button><button data-score="8" type="button">8</button><button data-score="9" type="button">9</button><button data-score="10" type="button">10</button>
+                            </div>
+                            <p class="rating-caption" aria-live="polite"><strong>选择 1–10 分</strong><span>按你的整体阅读体验评分</span></p>
+                        </div>
+                        <aside class="rating-rules" aria-label="评分参考"><div class="rating-rules-heading"><strong>评分参考</strong><small>5 档说明</small></div><ul><li><b>1–2 分</b><span>垃圾作品，看了浪费时间</span></li><li><b>3–4 分</b><span>有严重雷点</span></li><li><b>5–6 分</b><span>中规中矩</span></li><li><b>7–8 分</b><span>整体及格且有亮点</span></li><li><b>9–10 分</b><span>全方面优秀</span></li></ul></aside>
+                    </div>
+                    <div class="tag-feedback" hidden>
+                        <div class="tag-feedback-heading"><span>标签偏好（可选）</span><small>点击标签循环设置：未表态 → 喜欢 → 软回避 → 硬屏蔽</small></div>
+                        <div class="tag-feedback-list" role="group" aria-label="逐项设置标签偏好"></div>
+                        <div class="tag-feedback-legend"><span>喜欢：提高推荐</span><span>软回避：瑕不掩瑜时仍可推荐</span><span>硬屏蔽：不再推荐含此标签的作品</span></div>
+                    </div>
+                    <label class="local-review"><span>本地评语 <small>可选</small></span><textarea maxlength="5000" rows="3" placeholder="写下喜欢或不喜欢的地方…"></textarea></label>
+                    <div class="local-rating-actions"><small class="local-rating-state" role="status" aria-live="polite">正在读取…</small><button class="ghost-btn clear-local-rating" type="button">清除评价</button><button class="primary-btn save-local-rating" type="button">保存评价</button></div>
+                </section>
+                <section class="comment glass-card"><div class="panel-heading"><div><span>评论</span><h1>读者评论</h1></div></div><div class="comment-inner"></div><button class="ghost-btn comment-more" type="button" hidden>显示更多评论</button></section>
+            </div>
+
+            <aside class="detail-side-column"><section class="recommended-comics glass-card"><span class="side-label">相关推荐</span><h2 class="rc-title">你可能还喜欢</h2><div class="rc-cr"></div></section></aside>
+        </div>
+    </main>
+</div>
+<script type="module" src="./src/pages/chapter.js?v=20260902-ai-translation1"></script>
+</body>
+</html>

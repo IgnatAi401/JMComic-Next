@@ -1,0 +1,4 @@
+.categories-body { min-height: 260px; }
+.category-empty { grid-column: 1 / -1; padding: 90px 20px; color: var(--muted); text-align: center; }
+.filter-choice:disabled { opacity: .32; cursor: not-allowed; transform: none; }
+.filter-choice:disabled:hover { border-color: transparent; color: var(--muted); }

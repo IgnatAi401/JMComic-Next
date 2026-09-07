@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="view-transition" content="same-origin" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
+    <title>JMComic · 发现</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/index.css?v=20260902-cover-deck1" />
+    <link rel="stylesheet" href="./style/jmcomic-next.css?v=20260901-compact-feedback1" />
+</head>
+<body class="home-page">
+    <div class="root">
+        <nav class="nav"></nav>
+        <nav class="mob-nav"></nav>
+        <div class="switch-server"><span>图源1</span><div class="sh-sr-cr">
+            <div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div>
+            <div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div>
+        </div></div>
+        <aside class="app-dock" data-current="index" data-navigation-scope="same-tab" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
+            <a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现" aria-current="page"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a>
+            <button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button>
+            <a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a>
+            <a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
+            <a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a>
+            <a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a>
+            <a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span>
+            <a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
+        </div></aside>
+
+        <main class="home-main">
+            <section class="home-hero" aria-labelledby="home-title">
+                <div class="hero-copy random-comic-details" aria-live="polite" aria-busy="true">
+                    <div class="random-overline">
+                        <p class="hero-issue"><span>RANDOM / VERIFIED</span> 随机发现</p>
+                        <div class="random-id-line"><span>VALID ID</span><strong data-random-id>------</strong><small data-random-status>正在验证编号</small></div>
+                    </div>
+                    <h1 id="home-title" data-random-title>正在寻找一本漫画…</h1>
+                    <p class="random-author"><span>作者</span><strong data-random-author>等待有效作品</strong></p>
+                    <p class="hero-intro" data-random-description>每次打开主页都会生成一个 6 或 7 位编号，并通过漫画详情接口验证。只有有效作品才会出现在这里。</p>
+                    <div class="random-tags" data-random-tags aria-label="漫画标签"></div>
+                    <dl class="hero-notes random-meta" aria-label="漫画详细信息">
+                        <div><dt data-random-chapters>--</dt><dd>章节</dd></div>
+                        <div><dt data-random-pages>--</dt><dd>图片</dd></div>
+                        <div><dt data-random-comments>--</dt><dd>评论</dd></div>
+                        <div><dt data-random-date>--</dt><dd>上架</dd></div>
+                    </dl>
+                    <div class="hero-actions">
+                        <a class="primary-btn hero-primary-action random-open" data-random-open aria-disabled="true">查看详情 <span aria-hidden="true">↗</span></a>
+                        <button class="random-trigger" type="button" data-random-trigger><span aria-hidden="true">⤨</span><b>随机一本</b></button>
+                        <a class="random-history-link" data-navigation="same-tab" href="./library.html?view=random" aria-label="查看全部随机历史" title="全部随机历史">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M4.5 8.5h10a4.5 4.5 0 0 1 0 9H9M4.5 8.5 8 5m-3.5 3.5L8 12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 11.5h4.5M12 14.5h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                        </a>
+                    </div>
+                </div>
+
+                <div class="banner hero-showcase random-showcase is-loading" aria-label="随机漫画封面">
+                    <span class="hero-halo" aria-hidden="true"></span>
+                    <img class="random-backdrop" alt="" aria-hidden="true" />
+                    <div class="random-cover-stack" data-random-stack aria-label="相邻的随机漫画"></div>
+                    <a class="random-cover" data-random-cover aria-disabled="true"><img alt="随机漫画封面" /></a>
+                    <div class="random-pager" aria-label="随机历史翻页">
+                        <button type="button" data-random-prev disabled aria-label="较早的随机漫画"><svg aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="M12.5 4.5 7 10l5.5 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <button type="button" data-random-next disabled aria-label="较新的随机漫画"><svg aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="m7.5 4.5 5.5 5.5-5.5 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                    <div class="random-loader" aria-hidden="true"><i></i></div>
+                </div>
+            </section>
+
+            <section class="tag-section" aria-labelledby="interest-title">
+                <div class="section-heading">
+                    <div><p class="eyebrow">EXPLORE BY MOOD</p><h2 id="interest-title">从兴趣出发</h2></div>
+                    <p>先选一种氛围，再让故事自己找上门。</p>
+                    <a href="./categories.html">全部分类 <span aria-hidden="true">↗</span></a>
+                </div>
+                <div class="tag-cr">
+                    <a href="./search.html?sq=巨乳&amp;v=20260827-7" class="tag-item" data-index="01">巨乳</a>
+                    <a href="./search.html?sq=乳汁&amp;v=20260827-7" class="tag-item" data-index="02">乳汁</a>
+                    <a href="./search.html?sq=修女&amp;v=20260827-7" class="tag-item" data-index="03">修女</a>
+                    <a href="./search.html?sq=催眠&amp;v=20260827-7" class="tag-item" data-index="04">催眠</a>
+                    <a href="./search.html?sq=女仆&amp;v=20260827-7" class="tag-item" data-index="05">女仆</a>
+                    <a href="./search.html?sq=怪物女孩&amp;v=20260827-7" class="tag-item" data-index="06">怪物女孩</a>
+                    <a href="./search.html?sq=常识改变&amp;v=20260827-7" class="tag-item" data-index="07">常识改变</a>
+                    <a href="./categories.html?v=20260827-filter1" class="tag-item accent" data-index="ALL">浏览分类</a>
+                </div>
+            </section>
+
+            <section class="home-library" aria-labelledby="library-title">
+                <header class="library-heading">
+                    <div><p class="eyebrow">NOW ON THE SHELF</p><h2 id="library-title">当下值得读</h2></div>
+                    <p>首页推荐与近期栏目统一汇入这里，完整采用接口返回列表并直接平铺浏览。</p>
+                </header>
+                <div class="recommendations" aria-live="polite" aria-busy="true">
+                    <div class="home-loading"><i aria-hidden="true"></i><span>正在整理今日书架</span></div>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script type="module" src="./src/pages/index.js?v=20260902-cover-deck1"></script>
+</body>
+</html>

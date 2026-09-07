@@ -1,0 +1,42 @@
+.search-filter-card { margin: 28px 0 18px; padding: 9px 26px; border-radius: 26px; }
+.search-filter-row { padding: 17px 0; display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 18px; align-items: start; border-bottom: 1px solid rgba(255,255,255,.08); }
+.search-filter-row:last-child { border-bottom: 0; }
+.search-filter-row .filter-label { margin: 10px 0 0; color: var(--quiet); font: 700 9px/1 ui-monospace, monospace; letter-spacing: .12em; }
+.filter-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.filter-choice { min-height: 36px; padding: 0 13px; border: 1px solid transparent; border-radius: 12px; background: rgba(255,255,255,.055); color: var(--muted); font-size: 11px; cursor: pointer; transition: .2s var(--ease-out); }
+.filter-choice:hover { border-color: rgba(255,255,255,.18); color: var(--text); transform: translateY(-1px); }
+.filter-choice.active { border-color: rgba(199,146,47,.42); background: rgba(199,146,47,.1); color: var(--accent); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+.filter-choice:disabled { opacity: .32; cursor: not-allowed; transform: none; }
+.filter-choice:disabled:hover { border-color: transparent; color: var(--muted); }
+.search-summary { min-height: 44px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.clear-filters { min-height: 34px; padding: 0 11px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--quiet); font-size: 10px; cursor: pointer; }
+.clear-filters:hover { border-color: var(--control-border); background: var(--control-bg); color: var(--accent); }
+.search-cr { min-height: 260px; }
+.search-empty { grid-column: 1 / -1; padding: 90px 20px; color: var(--muted); text-align: center; }
+.serial-switch { width: fit-content; display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.serial-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch-track { width: 44px; height: 26px; padding: 3px; flex: 0 0 auto; display: block; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.075); box-shadow: inset 0 1px 3px rgba(0,0,0,.22); transition: .24s ease; }
+.switch-track i { width: 18px; height: 18px; display: block; border-radius: 50%; background: rgba(255,255,255,.75); box-shadow: 0 3px 8px rgba(0,0,0,.3); transition: transform .24s cubic-bezier(.2,.8,.2,1), background .24s ease; }
+.serial-switch input:checked + .switch-track { border-color: rgba(199,146,47,.6); background: rgba(199,146,47,.24); }
+.serial-switch input:checked + .switch-track i { background: var(--accent); transform: translateX(18px); }
+.serial-switch input:focus-visible + .switch-track { outline: 2px solid var(--accent); outline-offset: 3px; }
+.switch-copy { display: grid; gap: 3px; }
+.switch-copy strong { color: var(--text); font-size: 11px; font-weight: 650; }
+.switch-copy small { color: var(--quiet); font-size: 10px; }
+
+/* Match the simulated-glass material used by comic detail cards. */
+.listing-page .search-filter-card {
+    border-color: rgba(255, 255, 255, .105) !important;
+    background: linear-gradient(145deg, rgba(29, 29, 29, .94), rgba(10, 10, 10, .94)) !important;
+    box-shadow: var(--edge-glow), 0 22px 58px rgba(0, 0, 0, .34), 0 5px 16px rgba(0, 0, 0, .24) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+
+@media (max-width: 700px) {
+    .search-filter-card { padding: 8px 17px; border-radius: 22px; }
+    .search-filter-row { grid-template-columns: 1fr; gap: 10px; padding: 14px 0; }
+    .search-filter-row .filter-label { margin-top: 0; }
+    .filter-options { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+    .filter-choice { flex: 0 0 auto; }
+}

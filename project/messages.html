@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="view-transition" content="same-origin" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
+    <title>JMComic · 消息与追更</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/messages.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/jmcomic-next.css?v=20260901-card-cleanup1" />
+</head>
+<body>
+<div class="root">
+    <nav class="nav"></nav><nav class="mob-nav"></nav>
+    <div class="switch-server"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
+    <aside class="app-dock" data-current="messages" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
+        <a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a><button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button>
+        <a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a><a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
+        <a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a><a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更" aria-current="page"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a>
+        <a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span><a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
+    </div></aside>
+    <main class="listing-page message-page">
+        <header class="page-hero split"><div><p class="eyebrow">消息与追更</p><h1>消息</h1></div><p>查看账号通知、正在追踪的连载和最近更新时间。</p></header>
+        <div class="message-toolbar"><span class="message-status">正在连接账号…</span><button class="ghost-btn refresh-messages" type="button">刷新消息</button></div>
+        <div class="message-layout">
+            <section class="message-panel glass-card"><div class="message-heading"><div><span>账号通知</span><h2>通知</h2></div><b class="notification-total">0</b></div><div class="notification-list"></div></section>
+            <section class="message-panel glass-card"><div class="message-heading"><div><span>更新提醒</span><h2>连载追踪</h2></div><b class="tracking-total">0</b></div><div class="tracking-list"></div><button class="ghost-btn tracking-more" type="button" hidden>显示更多追踪</button></section>
+        </div>
+    </main>
+</div>
+<script type="module" src="./src/pages/messages.js?v=20260827-7"></script>
+</body>
+</html>

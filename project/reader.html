@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <title>JMComic · 阅读</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/reader.css?v=20260901-rating-redesign1" />
+    <link rel="stylesheet" href="./style/jmcomic-next.css?v=20260902-reader-button-icons-only1" />
+</head>
+<body class="reader-body">
+    <div class="reader-side-stack">
+    <aside class="reader-panel" data-navigation-scope="same-tab">
+        <header class="reader-panel-head">
+            <a class="reader-brand logo" href="./index.html" aria-label="JMComic 首页"><b class="logo-mark"><img src="./image/b5c2a091-eb74-4b78-99dd-b52dc2a1dfe5.png" alt="JMComic" /></b></a>
+            <div class="reader-title"><strong>正在载入</strong><span>章节信息</span></div>
+        </header>
+        <nav class="reader-controls" aria-label="阅读控制">
+            <a class="reader-back" href="./index.html" aria-label="返回漫画详情">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/><path d="M9 12h10"/></svg><span class="reader-control-label">返回详情</span>
+            </a>
+            <div class="reader-chapter-controls">
+                <a class="chapter-nav prev-chapter" aria-label="上一章"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg><span class="reader-control-label">上一章</span></a>
+                <label class="reader-select-control" data-label="选择章节">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span class="reader-control-label">选择章节</span>
+                    <select class="reader-chapter-select" aria-label="选择章节"></select>
+                </label>
+                <a class="chapter-nav next-chapter" aria-label="下一章"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span class="reader-control-label">下一章</span></a>
+            </div>
+            <div class="reader-tool-controls">
+                <div class="switch-server reader-source"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
+                <div class="batch-setting reader-batch-setting"></div>
+            </div>
+        </nav>
+    </aside>
+    <aside class="progress-cr reader-progress-panel" aria-label="阅读进度" hidden>
+        <div class="progress-count"><input class="progress-current" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="当前页码，编辑后跳转" /><span class="progress-separator" aria-hidden="true">/</span><span class="progress-total" aria-hidden="true">1</span></div>
+        <div class="progress"><div class="progress-inner"></div><button class="progress-thumb" type="button" aria-label="拖动阅读进度"></button></div>
+    </aside>
+    </div>
+
+    <main class="reader-main">
+        <div class="reader-loading" aria-label="正在准备本章图片"></div>
+        <section class="comic-content-cr" hidden><div class="comic-img-cr"></div></section>
+        <section class="reader-comments comment glass-card" hidden>
+            <div class="reader-comment-heading"><div><span>本话讨论 · <b class="reader-comment-context"></b></span><h1>评论</h1></div></div>
+            <div class="comment-inner" hidden></div>
+            <button class="ghost-btn comment-load" type="button">查看本话评论</button>
+            <button class="ghost-btn comment-more" type="button" hidden>显示更多评论</button>
+        </section>
+        <section class="reader-local-rating local-rating-panel glass-card" hidden>
+            <div class="local-rating-heading rating-heading"><div><span>我的评价</span><h2>给这本漫画打分</h2><p>只保存在本机，之后可以随时修改</p></div><output class="rating-value" aria-live="polite"><b class="rating-value-number">—</b><small>/ 10</small></output></div>
+            <div class="rating-score-area">
+                <div class="rating-score-control">
+                    <div class="rating-scale-labels" aria-hidden="true"><span>不推荐</span><span>非常优秀</span></div>
+                    <div class="rating-buttons" role="group" aria-label="作品总分，1到10分">
+                        <button data-score="1" type="button">1</button><button data-score="2" type="button">2</button><button data-score="3" type="button">3</button><button data-score="4" type="button">4</button><button data-score="5" type="button">5</button><button data-score="6" type="button">6</button><button data-score="7" type="button">7</button><button data-score="8" type="button">8</button><button data-score="9" type="button">9</button><button data-score="10" type="button">10</button>
+                    </div>
+                    <p class="rating-caption" aria-live="polite"><strong>选择 1–10 分</strong><span>按你的整体阅读体验评分</span></p>
+                </div>
+                <aside class="rating-rules" aria-label="评分参考"><div class="rating-rules-heading"><strong>评分参考</strong><small>5 档说明</small></div><ul><li><b>1–2 分</b><span>垃圾作品，看了浪费时间</span></li><li><b>3–4 分</b><span>有严重雷点</span></li><li><b>5–6 分</b><span>中规中矩</span></li><li><b>7–8 分</b><span>整体及格且有亮点</span></li><li><b>9–10 分</b><span>全方面优秀</span></li></ul></aside>
+            </div>
+            <div class="tag-feedback" hidden>
+                <div class="tag-feedback-heading"><span>标签偏好（可选）</span><small>点击标签循环设置：未表态 → 喜欢 → 软回避 → 硬屏蔽</small></div>
+                <div class="tag-feedback-list" role="group" aria-label="逐项设置标签偏好"></div>
+                <div class="tag-feedback-legend"><span>喜欢：提高推荐</span><span>软回避：瑕不掩瑜时仍可推荐</span><span>硬屏蔽：不再推荐含此标签的作品</span></div>
+            </div>
+            <label class="local-review"><span>本地评语 <small>可选</small></span><textarea maxlength="5000" rows="3" placeholder="写下喜欢或不喜欢的地方…"></textarea></label>
+            <div class="local-rating-actions"><small class="local-rating-state" role="status" aria-live="polite">正在读取…</small><button class="ghost-btn clear-local-rating" type="button">清除评价</button><button class="primary-btn save-local-rating" type="button">保存评价</button></div>
+        </section>
+        <section class="reader-end glass-card" hidden><span>本章阅读完毕</span><h2 class="end-title"></h2><div><a class="ghost-btn end-prev">上一章</a><a class="primary-btn end-next">下一章</a></div></section>
+    </main>
+
+    <script type="module" src="./src/pages/reader.js?v=20260902-reader-sidebar-no-blur2"></script>
+</body>
+</html>

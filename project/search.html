@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="view-transition" content="same-origin" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
+    <title>JMComic · 搜索</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" />
+    <link rel="stylesheet" href="./style/search.css?v=20260901-detail-glass1" />
+    <link rel="stylesheet" href="./style/jmcomic-next.css?v=20260901-card-cleanup1" />
+</head>
+<body>
+<div class="root">
+    <nav class="nav"></nav><nav class="mob-nav"></nav>
+    <div class="switch-server"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
+    <aside class="app-dock" data-current="search" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
+        <a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a><button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索" aria-current="page"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button>
+        <a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a><a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
+        <a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a><a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a>
+        <a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span><a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
+    </div></aside>
+    <main class="body listing-page">
+        <header class="page-hero"><p class="eyebrow">搜索结果</p><h1 class="b-title">搜索结果</h1><p>按分类、时间和热度缩小范围，更快找到想看的作品。</p></header>
+        <section class="search-filter-card glass-card" aria-label="搜索筛选">
+            <div class="search-filter-row" data-filter="order"><span class="filter-label">排序</span><div class="filter-options">
+                <button class="filter-choice active" data-value="mv" type="button">观看量</button><button class="filter-choice" data-value="mr" type="button">发布时间</button><button class="filter-choice" data-value="tf" type="button">点赞量</button><button class="filter-choice" data-value="mp" type="button">图片数量</button>
+            </div></div>
+            <div class="search-filter-row" data-filter="category"><span class="filter-label">主分类</span><div class="filter-options">
+                <button class="filter-choice active" data-value="0" type="button">全部</button><button class="filter-choice" data-value="another" type="button">其他</button><button class="filter-choice" data-value="doujin" type="button">同人</button><button class="filter-choice" data-value="hanman" type="button">韩漫</button><button class="filter-choice" data-value="meiman" type="button">English Manga</button><button class="filter-choice" data-value="short" type="button">短篇</button><button class="filter-choice" data-value="single" type="button">单本</button>
+            </div></div>
+            <div class="search-filter-row search-subcategory-row" data-filter="mainTag" hidden><span class="filter-label">副分类</span><div class="filter-options search-subcategories"></div></div>
+            <div class="search-filter-row" data-filter="time"><span class="filter-label">时间<br />周期仅支持观看量</span><div class="filter-options">
+                <button class="filter-choice active" data-value="a" type="button">全部</button><button class="filter-choice" data-value="t" type="button">今天</button><button class="filter-choice" data-value="w" type="button">本周</button><button class="filter-choice" data-value="m" type="button">本月</button>
+            </div></div>
+            <div class="search-filter-row serial-filter-row"><span class="filter-label">连载</span><label class="serial-switch">
+                <input class="serial-toggle" type="checkbox" /><span class="switch-track" aria-hidden="true"><i></i></span><span class="switch-copy"><strong>仅显示单章</strong><small>开启后隐藏章节数大于 1 的作品</small></span>
+            </label></div>
+        </section>
+        <div class="search-summary"><span class="result-state">正在搜索</span><button class="clear-filters" type="button">重置筛选</button></div>
+        <div class="search-cr"><div class="loading-icon" style="display:flex"><i></i><span>正在整理结果</span></div></div>
+    </main>
+</div>
+<script>const sq=new URLSearchParams(location.search).get("sq");if(sq?.trim())document.querySelector(".b-title").textContent=`“${sq}”`;</script>
+<script type="module" src="./src/pages/search.js?v=20260827-filter1"></script>
+</body>
+</html>

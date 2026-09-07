@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" /><meta name="view-transition" content="same-origin" /><meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" /><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
+    <title>JMComic · 智能推荐</title>
+    <link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" /><link rel="stylesheet" href="./style/ai.css?v=20260901-unified-feedback1" /><link rel="stylesheet" href="./style/jmcomic-next.css?v=20260901-unified-feedback1" />
+</head>
+<body><div class="root"><nav class="nav"></nav><nav class="mob-nav"></nav>
+<div class="switch-server"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
+<aside class="app-dock" data-current="ai" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
+<a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a><button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button><a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a><a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
+<a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a><a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a><a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐" aria-current="page"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span><a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
+</div></aside>
+<main class="ai-page">
+    <header class="page-hero split"><div><p class="eyebrow">为你推荐</p><h1>智能推荐</h1></div><p>依据你的评价、作者与标签偏好计算结果，推荐理由始终可以查看。</p></header>
+    <section class="ai-dashboard">
+        <article class="profile-card glass-card">
+            <div class="ai-card-head"><div><span>你的偏好</span><h2>偏好模型</h2></div><button class="primary-btn generate-profile" type="button">重新计算偏好</button></div>
+            <div class="profile-stats"><span>收藏 <b data-stat="favorites">0</b></span><span>总评分 <b data-stat="rated">0</b></span><span>标签反馈 <b data-stat="tag_feedback">0</b></span><span>行为记录 <b data-stat="interactions">0</b></span></div>
+            <div class="profile-content"><p>正在读取本地偏好…</p></div><p class="profile-state"></p>
+        </article>
+        <article class="recommend-card glass-card">
+            <div class="ai-card-head"><div><span>发现内容</span><h2>生成新推荐</h2></div></div>
+            <form class="recommend-form">
+                <label class="toggle-label wide random-mode-label"><input name="random_mode" type="checkbox" /><span class="toggle-control" aria-hidden="true"><i></i></span><span class="toggle-copy"><strong>随机候选模式</strong><small>随机验证近期未推荐的 6 位或 7 位漫画编号；启用后忽略下方内容筛选，但仍可过滤连载</small></span></label>
+                <label class="wide" data-recommend-filter><span>关键字（可选）</span><input name="keyword" placeholder="例如：女仆；只用于初筛，不参与个性化评分" /></label>
+                <label data-recommend-filter><span>主分类</span><select name="category"><option value="0">全部</option></select></label>
+                <label data-recommend-filter><span>副分类</span><select name="subcategory" disabled><option value="">全部</option></select></label>
+                <label data-recommend-filter><span>排序</span><select name="order"><option value="mv">观看量</option><option value="mr">发布时间</option><option value="tf">点赞量</option><option value="mp">图片数量</option></select></label>
+                <label data-recommend-filter><span>时间范围（周期仅支持观看量）</span><select name="time"><option value="a">全部</option><option value="t">今天</option><option value="w">本周</option><option value="m">本月</option></select></label>
+                <label><span>候选池数量</span><input name="candidate_count" type="number" min="1" max="300" value="50" required /></label>
+                <label><span>最终推荐数量</span><input name="limit" type="number" min="1" max="100" value="10" required /></label>
+                <label class="toggle-label" data-recommend-filter data-random-compatible><input name="hide_serial" type="checkbox" /><span class="toggle-control" aria-hidden="true"><i></i></span><span class="toggle-copy"><strong>过滤连载</strong><small>只保留单章作品</small></span></label>
+                <label class="toggle-label"><input name="limit_all" type="checkbox" /><span class="toggle-control" aria-hidden="true"><i></i></span><span class="toggle-copy"><strong>尽可能多</strong><small>保留所有符合当前偏好的候选</small></span></label>
+                <div class="recommend-actions wide"><p class="recommend-state">尚未开始</p><button class="primary-btn generate-recommendations" type="submit">筛选并生成推荐</button></div>
+            </form>
+        </article>
+    </section>
+    <section class="recommend-output glass-card"><div class="ai-card-head"><div><span>本次结果</span><h2>推荐结果</h2></div></div><div class="recommend-results"><div class="ai-empty">生成推荐后会显示在这里。</div></div></section>
+    <section class="history-card glass-card"><div class="ai-card-head"><div><span>历史记录</span><h2>推荐历史</h2></div></div><div class="recommend-history"><p class="ai-empty">正在读取历史记录…</p></div></section>
+</main></div>
+<dialog class="raw-output-dialog"><div class="raw-dialog-panel"><header class="raw-dialog-head"><div><span>调试信息</span><h2 class="raw-dialog-title">模型原始输出</h2></div><button class="raw-dialog-close" type="button" aria-label="关闭">×</button></header><div class="raw-output-content"></div></div></dialog>
+<script type="module" src="./src/pages/ai.js?v=20260901-unified-feedback2"></script></body></html>
