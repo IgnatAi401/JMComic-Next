@@ -1,0 +1,41 @@
+# Local accounts, API keys, settings, reading history and database backups
+/project/data/
+/project/.runtime-cache/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets, runtime files and backups
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+*.backup
+
+# OS, editor and agent files
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+.codex/
+.agents/
+
+# Frontend dependencies and test output
+node_modules/
+coverage/
+playwright-report/
+test-results/
