@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "project"
-PAGES = {"index", "setting", "messages", "reader", "chapter", "ai", "library", "search", "latest", "categories"}
+PAGES = {"index", "setting", "messages", "reader", "chapter", "ai", "library", "search", "latest", "categories", "history-migration"}
 LOGOS = {"1e1c27c3-4553-4d6d-ad8c-d06dacbbfb5a.png", "b5c2a091-eb74-4b78-99dd-b52dc2a1dfe5.png"}
 REPORT = Path(tempfile.gettempdir()) / "jmcomic-ui-fixture-report.json"
 ENTRY = re.compile(r'<script\s+type="module"\s+src="\./src/pages/[^\"]+"\s*></script>')
@@ -84,7 +84,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             source, count = ENTRY.subn(f'<script type="module" src="/__fixture__/entry.js?page={page}{"&check=1" if check else ""}"></script>', source)
             if count != 1:
                 return self.send_error(500, "Page entry was not replaced; refusing to run live UI")
-            badge = '<a href="/ui-check.html" style="position:fixed;left:12px;bottom:10px;z-index:100;padding:5px 10px;border:1px solid #c7922f;border-radius:8px;background:#111;color:#f4dfb3;font:11px/1.5 sans-serif">UI 测试 · 虚构数据 · 点击运行检查</a>'
+            badge = '<a data-fixture-badge href="/ui-check.html" style="position:fixed;left:12px;bottom:10px;z-index:100;padding:5px 10px;border:1px solid #c7922f;border-radius:8px;background:#111;color:#f4dfb3;font:11px/1.5 sans-serif">UI 测试 · 虚构数据 · 点击运行检查</a>'
             source = source.replace("</body>", badge + "</body>")
             return self.respond(source.encode(), "text/html; charset=utf-8", head_only)
 

@@ -40,7 +40,7 @@ class Element {
     constructor(tagName = "div") {
         this.tagName = tagName;
         this.dataset = {};
-        this.style = {};
+        this.style = { setProperty(name, value) { this[name] = value; } };
         this.children = [];
         this.events = new Map();
         this.naturalWidth = 600;
@@ -59,12 +59,11 @@ class Element {
     }
 }
 
-function readerHarness({ cache = () => Promise.resolve({ queued: true }), onLayoutChange = null } = {}) {
+function readerHarness({ sources = ["https://fixture.invalid/"], batchSize = 1, count = 3, onLayoutChange = null } = {}) {
     const timers = fakeTimers();
     const frames = fakeTimers();
     const listeners = new Map();
-    const calls = { cache: 0, cancel: 0 };
-    const EagerComicImageLoader = loadModule("components/chapter/EagerComicImageLoader.js", "EagerComicImageLoader", {
+    const EagerComicImageLoader = loadModule("reader/EagerComicImageLoader.js", "EagerComicImageLoader", {
         ...timers,
         requestAnimationFrame: frames.setTimeout,
         cancelAnimationFrame: frames.clearTimeout,
@@ -73,48 +72,86 @@ function readerHarness({ cache = () => Promise.resolve({ queued: true }), onLayo
         document: { createElement: (name) => new Element(name) },
         ImageCutter: class { cutImage() { throw new Error("Unexpected image cutting"); } },
         jmApi: {
-            getChapterImageServers: () => ["fixture.invalid"],
-            getCachedChapterImageURL: (_, path) => `fixture:${path}`,
-        },
-        localRuntime: {
-            cacheChapterImages: () => { calls.cache++; return cache(); },
-            cancelChapterImages: () => { calls.cancel++; },
+            getChapterImageURLs: (_, path) => sources.map((source) => `${source}${path}`),
         },
     });
-    const loader = new EagerComicImageLoader("100", { onLayoutChange });
-    const containers = [0, 1, 2].map((index) => {
+    const loader = new EagerComicImageLoader("100", { onLayoutChange, batchSize });
+    const containers = Array.from({ length: count }, (_, index) => {
         const element = new Element();
         element.dataset = { index: String(index), path: `${index}.jpg`, state: "pending" };
         return element;
     });
-    return { loader, containers, timers, frames, listeners, calls };
+    return { loader, containers, timers, frames, listeners };
 }
 
-test("a failed chapter registration can recover through the existing retry button", async () => {
-    let online = false;
-    const h = readerHarness({ cache: () => online ? Promise.resolve({ queued: true }) : Promise.reject(new Error("offline")) });
+test("direct image failure can recover through retry without a backend request", async () => {
+    const h = readerHarness();
     h.loader.start(h.containers);
+    const first = h.containers[0].children[0];
+    assert.equal(first.src, "https://fixture.invalid/0.jpg");
+    assert.equal(first.crossOrigin, undefined);
+    first.onerror();
     await settle();
     assert.equal(h.containers[0].dataset.state, "error");
-    assert.equal(h.calls.cache, 1);
-
-    // Neighboring page loads must not repeatedly retry an errored page.
     h.loader.updateRenderWindow();
-    await settle();
-    assert.equal(h.calls.cache, 1);
     assert.equal(h.containers[0].dataset.state, "error");
-
-    online = true;
     h.containers[0].children[0].children[1].events.get("click")();
+    h.containers[1].children[0].onload();
     await settle();
-    assert.equal(h.calls.cache, 2);
-    const image = h.containers[0].children[0];
-    assert.equal(image.tagName, "img");
-    image.onload();
+    h.containers[0].children[0].onload();
     await settle();
     assert.equal(h.containers[0].dataset.state, "loaded");
     h.loader.suspend();
     await settle();
+    assert.equal(h.timers.callbacks.size, 0);
+});
+
+test("failed or timed-out sources switch once and stale callbacks cannot finish the replacement", async () => {
+    const h = readerHarness({ sources: ["https://first.invalid/", "https://second.invalid/", "https://third.invalid/"] });
+    h.loader.start(h.containers);
+    const first = h.containers[0].children[0];
+    const staleLoad = first.onload;
+    first.onerror();
+    const second = h.containers[0].children[0];
+    assert.equal(second.src, "https://second.invalid/0.jpg");
+    staleLoad();
+    assert.equal(h.containers[0].dataset.state, "rendering");
+    h.timers.fire();
+    const third = h.containers[0].children[0];
+    assert.equal(third.src, "https://third.invalid/0.jpg");
+    assert.equal(second.src, undefined);
+    third.onload();
+    await settle();
+    assert.equal(h.containers[0].dataset.state, "loaded");
+    h.loader.suspend();
+    await settle();
+});
+
+test("jumping cancels old loads, respects concurrency and prioritizes the new page", async () => {
+    const h = readerHarness({ batchSize: 2, count: 100 });
+    h.loader.start(h.containers);
+    assert.equal(h.loader.activeLoads, 2);
+    const first = h.containers[0].children[0];
+    const staleLoad = first.onload;
+    h.loader.setCurrent(70);
+    await settle();
+    assert.equal(first.src, undefined);
+    assert.equal(h.loader.activeLoads, 2);
+    assert.equal(h.containers[70].dataset.state, "rendering");
+    assert.equal(h.containers[71].dataset.state, "rendering");
+    assert.equal(h.containers[99].children.length, 0);
+    staleLoad();
+    assert.equal(h.containers[0].dataset.state, "pending");
+    h.loader.setBatchSize(1);
+    h.containers[70].children[0].onload();
+    await settle();
+    assert.equal(h.loader.activeLoads, 1);
+    h.listeners.get("jm-image-server-change")();
+    await settle();
+    assert.equal(h.containers[70].dataset.state, "rendering");
+    h.loader.suspend();
+    await settle();
+    assert.equal(h.loader.activeLoads, 0);
     assert.equal(h.timers.callbacks.size, 0);
 });
 
@@ -128,7 +165,6 @@ test("Safari back/forward restores interrupted image decoding and keeps placehol
 
     h.listeners.get("pagehide")({ persisted: true });
     await settle();
-    assert.equal(h.calls.cancel, 1);
     assert.equal(oldImage.src, undefined);
     assert.equal(oldImage.onload, null);
     assert.equal(h.containers[0].style.height, "900px");
@@ -138,7 +174,6 @@ test("Safari back/forward restores interrupted image decoding and keeps placehol
 
     h.listeners.get("pageshow")({ persisted: true });
     await settle();
-    assert.equal(h.calls.cache, 2);
     const restoredImage = h.containers[0].children[0];
     assert.notEqual(restoredImage, oldImage);
     restoredImage.onload();
@@ -233,25 +268,31 @@ test("invalid successful local JSON is an error, while missing optional cache re
     await assert.rejects(runtime.request("fixture:local"), /503/);
 });
 
-for (const beaconResult of [false, "throw", true]) {
-    test(`chapter cancellation falls back only when a beacon is not queued (${beaconResult})`, async () => {
-        const requests = [];
-        const runtime = loadModule("local/LocalRuntime.js", "localRuntime", {
-            navigator: { sendBeacon: () => {
-                if (beaconResult === "throw") throw new Error("queue unavailable");
-                return beaconResult;
-            } },
-            fetch: async (...args) => { requests.push(args); return { ok: true }; },
-        });
-        assert.equal(runtime.cancelChapterImages("123"), true);
-        assert.equal(requests.length, beaconResult === true ? 0 : 1);
-        if (requests.length) {
-            assert.equal(requests[0][1].keepalive, true);
-            assert.deepEqual(JSON.parse(requests[0][1].body), { chapter: "123" });
-        }
-        await settle();
+test("reader concurrency is local to the device and rejects unreasonable values", async () => {
+    const stored = new Map();
+    const events = [];
+    const setting = loadModule("core/Setting.js", "setting", {
+        readLocalStorage: (key) => stored.get(key) ?? null,
+        writeLocalStorage: (key, value) => stored.set(key, value),
+        installNavigationPolicy() {},
+        CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
+        window: { dispatchEvent: (event) => events.push(event) },
     });
-}
+    await setting.init();
+    assert.equal(setting.image_load_batch_size, 5);
+    for (const value of [1, 2, 5, 10, 20, 50, 100]) {
+        await setting.setImageLoadBatchSize(value);
+        assert.equal(stored.get("jm_reader_concurrency"), String(value));
+        await setting.init();
+        assert.equal(setting.image_load_batch_size, value);
+    }
+    for (const value of [0, 3, 4, 6, 7, 8, 9, 101, 500, 1.5, "bad"]) await assert.rejects(setting.setImageLoadBatchSize(value));
+    stored.set("jm_reader_concurrency", "3");
+    await setting.init();
+    assert.equal(setting.image_load_batch_size, 5);
+    setting.setOption("using_imgserver_index", 2);
+    assert.equal(events.at(-1).type, "jm-image-server-change");
+});
 
 function apiHarness(fetch, timers = fakeTimers()) {
     const api = loadModule("api/JmcomicApi.js", "jmApi", {
@@ -315,7 +356,7 @@ test("bootstrap text bodies retain their timeout and retry after an interrupted 
 
 function cutterHarness(failure = null) {
     const canvases = [];
-    const ImageCutter = loadModule("components/general/ImageCutter.js", "ImageCutter", {
+    const ImageCutter = loadModule("reader/ImageCutter.js", "ImageCutter", {
         crypto: { calculateMD5: () => { throw new Error("Unexpected hashing"); } },
         document: {
             createDocumentFragment: () => new Element("fragment"),

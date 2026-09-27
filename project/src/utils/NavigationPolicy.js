@@ -1,6 +1,5 @@
 const SAME_TAB_SCOPE = '[data-navigation-scope="same-tab"]';
 const SAME_TAB_LINK = '[data-navigation="same-tab"]';
-const APP_DOCK_SCOPE = ".app-dock";
 
 const isPageNavigation = (anchor) => {
     if (anchor.hasAttribute("download")) return false;
@@ -23,7 +22,6 @@ const isPageNavigation = (anchor) => {
 const staysInCurrentPage = (anchor) => (
     anchor.matches(SAME_TAB_LINK)
     || Boolean(anchor.closest(SAME_TAB_SCOPE))
-    || Boolean(anchor.closest(APP_DOCK_SCOPE))
 );
 
 const configureLink = (anchor) => {

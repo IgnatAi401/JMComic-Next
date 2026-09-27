@@ -1,4 +1,4 @@
-import { setting } from "../components/general/Setting.js";
+import { setting } from "../core/Setting.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
 import { crypto } from "./Crypto.js";
@@ -720,10 +720,6 @@ class JmcomicApi {
         return `https://${this.imgServers[Number(id) % 5]}/media/albums/${id}_3x4.jpg`;
     }
 
-    getChapterImageURL(id, pathName) {
-        return this.getCachedChapterImageURL(id, pathName);
-    }
-
     getChapterImageServers() {
         const selected = Number(setting.using_imgserver_index);
         const startIndex = Number.isInteger(selected) && selected >= 0 && selected < this.imgServers.length ? selected : 0;
@@ -736,14 +732,6 @@ class JmcomicApi {
         return servers.map((server) => `https://${server}/media/photos/${encodeURIComponent(id)}/${safePath}`);
     }
 
-    getCachedChapterImageURL(id, pathName) {
-        const query = new URLSearchParams({
-            chapter: String(id),
-            path: String(pathName),
-            servers: this.getChapterImageServers().join(","),
-        });
-        return `./local-api/image?${query}`;
-    }
 }
 
 export const jmApi = new JmcomicApi();

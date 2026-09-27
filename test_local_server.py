@@ -22,9 +22,7 @@ with patch("local_features.LocalFeatureStore", return_value=_server_store):
 local_server.LocalFeatureStore = LocalFeatureStore
 local_server.DATA_DIR = _server_store.data_dir
 local_server.ACCOUNT_FILE = local_server.DATA_DIR / "account.json"
-local_server.SETTINGS_FILE = local_server.DATA_DIR / "settings.json"
 local_server.CACHE_DIR = local_server.DATA_DIR / "cache" / "api"
-local_server.IMAGE_CACHE_DIR = local_server.DATA_DIR / "cache" / "images"
 
 
 def tearDownModule():
@@ -55,15 +53,6 @@ def _handler_with_body(value):
     handler.rfile = io.BytesIO(payload)
     handler.send_json = Mock()
     return handler
-
-
-def _wait_until(predicate, timeout=3):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return bool(predicate())
 
 
 class AtomicJsonWriteTests(unittest.TestCase):
@@ -105,16 +94,6 @@ class RuntimeFileReadTests(unittest.TestCase):
                     with self.subTest(value=value):
                         target.write_text(json.dumps(value), encoding="utf-8")
                         self.assertEqual(local_server.read_account(), {"username": "", "password": ""})
-
-    def test_non_object_settings_json_uses_default_batch_size(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "settings.json"
-            with patch.object(local_server, "SETTINGS_FILE", target):
-                for value in (None, [], "text", 3, True):
-                    with self.subTest(value=value):
-                        target.write_text(json.dumps(value), encoding="utf-8")
-                        self.assertEqual(local_server.read_settings(), {"image_load_batch_size": 5})
-
 
 class LocalHandlerConfigGetTests(unittest.TestCase):
     def test_config_get_errors_are_returned_as_structured_json(self):
@@ -179,27 +158,6 @@ class LocalHandlerResponseTests(unittest.TestCase):
                     handler.send_raw_json(b'{"ok":true}')
                     self.assertTrue(handler.close_connection)
                     handler.send_response.assert_called_once_with(HTTPStatus.OK)
-
-    def test_image_response_keeps_open_file_when_cache_is_removed_during_headers(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "cover.img"
-            payload = b"cached image data"
-            path.write_bytes(payload)
-            handler = self.make_handler()
-            handler.end_headers.side_effect = path.unlink
-
-            handler.send_image_file(path, "image/jpeg")
-
-            self.assertEqual(handler.wfile.getvalue(), payload)
-            handler.send_header.assert_any_call("Content-Length", str(len(payload)))
-
-    def test_missing_image_is_reported_before_sending_success_headers(self):
-        with tempfile.TemporaryDirectory() as directory:
-            handler = self.make_handler()
-            with self.assertRaises(local_server.ImageCacheError):
-                handler.send_image_file(Path(directory) / "missing.img", "image/jpeg")
-            handler.send_response.assert_not_called()
-
 
 class CacheReadTests(unittest.TestCase):
     def test_non_object_api_cache_is_a_miss(self):
@@ -295,158 +253,8 @@ class CheckInProxyTests(unittest.TestCase):
         handler.send_json.assert_not_called()
 
 
-class ImagePrefetchManagerTests(unittest.TestCase):
-    servers = ["cdn-msp.jmapiproxy1.cc"]
-
-    def test_workers_and_active_jobs_are_globally_bounded(self):
-        manager = local_server.ImagePrefetchManager(max_active_jobs=2, max_workers=2)
-        release = threading.Event()
-        state_lock = threading.Lock()
-        active = 0
-        maximum_active = 0
-
-        def blocked_download(*_args):
-            nonlocal active, maximum_active
-            with state_lock:
-                active += 1
-                maximum_active = max(maximum_active, active)
-            try:
-                release.wait(3)
-            finally:
-                with state_lock:
-                    active -= 1
-
-        jobs = []
-        try:
-            with patch("local_server.ensure_image_cached", side_effect=blocked_download):
-                jobs.append(manager.enqueue("1", ["1.jpg", "2.jpg"], self.servers, 2))
-                jobs.append(manager.enqueue("2", ["1.jpg", "2.jpg"], self.servers, 2))
-                self.assertTrue(_wait_until(lambda: maximum_active == 2))
-                with self.assertRaises(local_server.ImageCacheError):
-                    manager.enqueue("3", ["1.jpg"], self.servers, 1)
-                self.assertEqual(maximum_active, 2)
-                release.set()
-                self.assertTrue(_wait_until(lambda: all(job.completed for job in jobs)))
-
-                next_job = manager.enqueue("3", ["1.jpg"], self.servers, 1)
-                self.assertTrue(_wait_until(lambda: next_job.completed))
-        finally:
-            release.set()
-            for job in jobs:
-                job.cancel()
-
-    def test_each_job_finishes_a_batch_before_starting_the_next(self):
-        manager = local_server.ImagePrefetchManager(max_active_jobs=1, max_workers=4)
-        release_first_batch = threading.Event()
-        started = []
-        started_lock = threading.Lock()
-
-        def ordered_download(_chapter, image_path, _servers):
-            with started_lock:
-                started.append(image_path)
-            if image_path in {"1.jpg", "2.jpg"}:
-                release_first_batch.wait(3)
-
-        job = None
-        try:
-            with patch("local_server.ensure_image_cached", side_effect=ordered_download):
-                job = manager.enqueue(
-                    "1", ["1.jpg", "2.jpg", "3.jpg", "4.jpg"], self.servers, 2,
-                )
-                self.assertTrue(_wait_until(lambda: len(started) == 2))
-                time.sleep(0.05)
-                self.assertCountEqual(started, ["1.jpg", "2.jpg"])
-                release_first_batch.set()
-                self.assertTrue(_wait_until(lambda: job.completed))
-                self.assertCountEqual(started[2:], ["3.jpg", "4.jpg"])
-        finally:
-            release_first_batch.set()
-            if job:
-                job.cancel()
-
-    def test_worker_thread_construction_failure_releases_global_slot(self):
-        manager = local_server.ImagePrefetchManager(max_active_jobs=1, max_workers=1)
-        real_thread = threading.Thread
-
-        def build_thread(*args, **kwargs):
-            target = kwargs.get("target")
-            if getattr(target, "__name__", "") == "download_one_bounded":
-                raise RuntimeError("worker construction failed")
-            return real_thread(*args, **kwargs)
-
-        try:
-            with patch("local_server.threading.Thread", side_effect=build_thread):
-                job = manager.enqueue("1", ["1.jpg"], self.servers, 1)
-                self.assertTrue(_wait_until(lambda: job.completed))
-
-            self.assertTrue(manager.worker_slots.acquire(blocking=False))
-            manager.worker_slots.release()
-            self.assertEqual(job.errors, {"1.jpg": "worker construction failed"})
-        finally:
-            manager.stop()
-
-    def test_cancel_after_worker_slot_acquire_does_not_start_another_download(self):
-        holder = {}
-        ready = threading.Event()
-
-        class CancelOnAcquire:
-            def __init__(self):
-                self.releases = 0
-
-            def acquire(self, timeout=None):
-                self.assert_timeout(timeout)
-                ready.wait(3)
-                holder["job"].cancel()
-                return True
-
-            def release(self):
-                self.releases += 1
-
-            @staticmethod
-            def assert_timeout(timeout):
-                if timeout != 0.1:
-                    raise AssertionError(f"unexpected timeout: {timeout}")
-
-        worker_slots = CancelOnAcquire()
-        on_finished = Mock()
-        with patch("local_server.ensure_image_cached") as ensure_image_cached:
-            job = local_server.ImagePrefetchJob(
-                "1", ["1.jpg"], self.servers, 1, worker_slots, 1, on_finished,
-            )
-            holder["job"] = job
-            ready.set()
-            self.assertTrue(_wait_until(lambda: job.completed))
-
-        ensure_image_cached.assert_not_called()
-        self.assertEqual(worker_slots.releases, 1)
-        on_finished.assert_called_once_with()
-
-    def test_stop_is_idempotent_cancels_jobs_and_rejects_new_work(self):
-        manager = local_server.ImagePrefetchManager(max_active_jobs=1, max_workers=1)
-        started = threading.Event()
-        release = threading.Event()
-
-        def blocked_download(*_args):
-            started.set()
-            release.wait(3)
-
-        try:
-            with patch("local_server.ensure_image_cached", side_effect=blocked_download):
-                job = manager.enqueue("1", ["1.jpg"], self.servers, 1)
-                self.assertTrue(started.wait(3))
-                manager.stop()
-                manager.stop()
-                self.assertTrue(job.cancelled)
-                self.assertIsNone(manager.get("1"))
-                with self.assertRaisesRegex(local_server.ImageCacheError, "预取服务已停止"):
-                    manager.enqueue("2", ["1.jpg"], self.servers, 1)
-        finally:
-            release.set()
-            self.assertTrue(_wait_until(lambda: job.completed if "job" in locals() else True))
-
-
 class ServerLifecycleTests(unittest.TestCase):
-    def test_main_stops_prefetch_manager_during_shutdown(self):
+    def test_main_stops_embeddings_and_closes_server_during_shutdown(self):
         server = Mock()
         server.serve_forever.side_effect = KeyboardInterrupt
 
@@ -458,14 +266,11 @@ class ServerLifecycleTests(unittest.TestCase):
             ),
             patch("local_server.ensure_runtime_files"),
             patch("local_server.cleanup_cache"),
-            patch("local_server.cleanup_image_cache"),
             patch("local_server.ThreadingHTTPServer", return_value=server),
-            patch.object(local_server.image_prefetch_manager, "stop") as stop_prefetch,
             patch.object(local_server.embedding_runtime, "stop") as stop_embeddings,
         ):
             local_server.main()
 
-        stop_prefetch.assert_called_once_with()
         stop_embeddings.assert_called_once_with()
         server.server_close.assert_called_once_with()
 
