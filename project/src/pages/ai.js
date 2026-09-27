@@ -1,12 +1,12 @@
+import { mountShell } from "../ui/shell.js";
+import { Sheet } from "../ui/overlay.js";
+import { hydrateCovers, coverHtml } from "../ui/covers.js";
 import { jmApi } from "../api/JmcomicApi.js";
-import { NavManager } from "../components/general/NavManager.js";
-import { setting } from "../components/general/Setting.js";
-import { SwitchServerBtnManager } from "../components/general/SwitchServerBtnManager.js";
 import { isSingleChapterComic, keepSingleChapterComics } from "../utils/ComicChapterFilter.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { reconcileListingFilters } from "../utils/ListingFilters.js";
-import { showToast } from "../components/general/Toast.js";
-import { renderPageError } from "../utils/PageError.js";
+import { showToast } from "../ui/toast.js";
+import { renderPageError } from "../ui/states.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -62,9 +62,7 @@ const humanizeKey = (key) => BREAKDOWN_LABELS[key] || String(key).replaceAll("_"
 
 class AiPage {
     async init() {
-        setting.init();
-        new NavManager().init();
-        new SwitchServerBtnManager().init();
+        mountShell();
         this.form = document.querySelector(".recommend-form");
         this.categories = [];
         this.bindEvents();
@@ -72,7 +70,7 @@ class AiPage {
             jmApi.init(),
             this.loadProfile(),
             this.loadHistory(),
-            this.loadCategories(),
+            this.loadCategories().catch((error) => showToast(`分类暂时不可用：${error.message}`, "warning")),
             this.loadEmbeddingStatus(),
         ]);
     }
@@ -123,15 +121,6 @@ class AiPage {
         document.querySelector(".recommend-results").addEventListener("click", (event) => {
             const link = event.target.closest("[data-recommendation-open]");
             if (link) this.recordRecommendationOpen(link);
-        });
-        const dialog = document.querySelector(".raw-output-dialog");
-        const closeDialog = () => {
-            if (typeof dialog.close === "function") dialog.close();
-            else dialog.removeAttribute("open");
-        };
-        dialog.querySelector(".raw-dialog-close").addEventListener("click", closeDialog);
-        dialog.addEventListener("click", (event) => {
-            if (event.target === dialog) closeDialog();
         });
         this.syncRandomMode();
     }
@@ -233,7 +222,7 @@ class AiPage {
             const items = asList(value).filter(Boolean);
             return items.length ? `<h3>${title}</h3><ul>${items.map((item) => {
                 const text = String(item);
-                return `<li>${searchable ? `<a href="./search.html?sq=${encodeURIComponent(text)}&v=20260827-filter1">${escapeHtml(text)}</a>` : escapeHtml(text)}</li>`;
+                return `<li>${searchable ? `<a href="./search.html?sq=${encodeURIComponent(text)}">${escapeHtml(text)}</a>` : escapeHtml(text)}</li>`;
             }).join("")}</ul>` : "";
         };
         const ratingSummary = profile.rating_summary && typeof profile.rating_summary === "object"
@@ -267,7 +256,7 @@ class AiPage {
             const source = item.source === "explicit"
                 ? "用户明确"
                 : (item.source === "review_explicit" ? "评语明确" : "跨作品推断");
-            return `<a class="profile-signal ${weight >= 0 ? "positive" : "negative"}" href="./search.html?sq=${encodeURIComponent(item.tag)}&v=20260827-filter1"><strong>${escapeHtml(item.tag)}</strong><span>${escapeHtml(direction)} · ${weight > 0 ? "+" : ""}${weight.toFixed(2)}</span><small>${escapeHtml(source)} · 置信度 ${confidence}%</small></a>`;
+            return `<a class="profile-signal ${weight >= 0 ? "positive" : "negative"}" href="./search.html?sq=${encodeURIComponent(item.tag)}"><strong>${escapeHtml(item.tag)}</strong><span>${escapeHtml(direction)} · ${weight > 0 ? "+" : ""}${weight.toFixed(2)}</span><small>${escapeHtml(source)} · 置信度 ${confidence}%</small></a>`;
         }).join("")}</div></section>` : `${list("偏好标签", profile.preferred_tags, true)}${list("回避倾向", profile.avoided_tags)}`;
         const summaryMarkup = profile.summary
             ? `<div class="profile-summary"><h3>偏好概述</h3><p>${escapeHtml(profile.summary)}</p></div>`
@@ -438,9 +427,13 @@ class AiPage {
     }
 
     async generateRecommendations() {
+        if (this.generating) return;
+        this.generating = true;
         const button = document.querySelector(".generate-recommendations");
         const state = document.querySelector(".recommend-state");
         const target = Math.min(300, Math.max(1, Number(this.form.elements.candidate_count.value) || 50));
+        const controls = [...this.form.elements].map((control) => [control, control.disabled]);
+        controls.forEach(([control]) => { control.disabled = true; });
         button.disabled = true;
         try {
             const collected = await this.collectCandidates(target, state);
@@ -464,31 +457,21 @@ class AiPage {
             state.textContent = error.message || "推荐生成失败";
             await this.loadHistory();
         } finally {
+            this.generating = false;
+            controls.forEach(([control, disabled]) => { control.disabled = disabled; });
             button.disabled = false;
         }
     }
 
     showRawOutput(run) {
-        const dialog = document.querySelector(".raw-output-dialog");
-        const title = dialog.querySelector(".raw-dialog-title");
-        const root = dialog.querySelector(".raw-output-content");
-        title.textContent = `历史原始输出 · 推荐 #${run.id}`;
+        this.rawSheet ||= new Sheet({ name: "diagnostics", title: "推荐诊断信息", wide: true });
+        this.rawSheet.setTitle(`推荐 #${run.id} · 诊断信息`);
         const entries = Array.isArray(run.raw_outputs) ? run.raw_outputs : [];
-        if (!entries.length) {
-            root.innerHTML = `<div class="ai-empty">${escapeHtml(run.error || "这条旧记录生成时尚未保存原始输出。")}</div>`;
-        } else {
-            root.innerHTML = entries.map((entry, index) => {
-                const response = typeof entry.response === "string"
-                    ? entry.response
-                    : JSON.stringify(entry.response ?? null, null, 2);
-                const time = entry.created_at
-                    ? new Date(entry.created_at * 1000).toLocaleString("zh-CN")
-                    : "";
-                return `<section class="raw-output-entry"><header><strong>${escapeHtml(entry.label || `调用 ${index + 1}`)}</strong><span>${escapeHtml(time)}${entry.http_status ? ` · HTTP ${escapeHtml(entry.http_status)}` : ""}</span></header><pre>${escapeHtml(response)}</pre></section>`;
-            }).join("");
-        }
-        if (typeof dialog.showModal === "function") dialog.showModal();
-        else dialog.setAttribute("open", "");
+        this.rawSheet.body.innerHTML = entries.length ? entries.map((entry, i) => {
+            const value = entry.response ?? entry.output ?? null;
+            return `<section class="raw-output-entry"><h3>${escapeHtml(entry.label || entry.stage || `调用 ${i + 1}`)}</h3><pre>${escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2))}</pre></section>`;
+        }).join("") : `<p>${escapeHtml(run.error || "这条记录没有诊断信息。")}</p>`;
+        this.rawSheet.open();
     }
 
     renderScoreBreakdown(breakdown) {
@@ -539,12 +522,13 @@ class AiPage {
                 : (item.reason?.summary || item.summary || "暂无文字说明，可展开查看评分依据");
             const coverUrl = item.cover_url || jmApi.getCoverImageURL(item.id);
             return `<article class="ai-result-item" data-recommendation-card="${escapeHtml(item.id)}" data-run-id="${escapeHtml(runId ?? "")}" data-position="${index + 1}" data-recommendation-source="${escapeHtml(source)}">
-            <a class="cover" data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}"><img loading="lazy" src="${escapeHtml(coverUrl)}" alt="${escapeHtml(item.title)}" /></a>
+            ${coverHtml(item, { href: `./chapter.html?id=${encodeURIComponent(item.id)}` }).replace('class="cover"', 'class="cover" data-recommendation-open')}
             <div class="ai-result-copy"><small>${escapeHtml(metadata.join(" · "))}</small><h3><a data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}">${escapeHtml(item.title)}</a></h3><p>${escapeHtml(reason)}</p>${this.renderScoreBreakdown(item.score_breakdown || item.score_components)}${asList(item.tags).length ? `<div class="ai-result-tags">${asList(item.tags).slice(0, 8).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div>
         </article>`;
         }).join("");
+        hydrateCovers(root);
         this.observeResultImpressions();
-        document.querySelector(".recommend-output").scrollIntoView({ behavior: "smooth", block: "start" });
+        document.querySelector(".recommend-output").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" });
     }
 
     observeResultImpressions() {

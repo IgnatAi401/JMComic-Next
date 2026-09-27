@@ -53,17 +53,6 @@ class LocalRuntime {
         return this.request("./local-api/account", { method: "DELETE" });
     }
 
-    getSettings() {
-        return this.request("./local-api/settings");
-    }
-
-    saveSettings(settings) {
-        return this.request("./local-api/settings", {
-            method: "POST",
-            body: settings,
-        });
-    }
-
     getWebChapterNames(albumId) {
         return this.request(`./local-api/chapter-names?id=${encodeURIComponent(albumId)}`, {
             timeoutMs: 90000,
@@ -175,34 +164,6 @@ class LocalRuntime {
             // Passive analytics must never block navigation or reading.
             return null;
         }
-    }
-
-    cacheChapterImages(chapter, paths, servers, concurrency) {
-        return this.request("./local-api/image-cache/chapter", {
-            method: "POST",
-            body: { chapter, paths, servers, concurrency },
-            timeoutMs: 10000,
-        });
-    }
-
-    cancelChapterImages(chapter) {
-        const body = JSON.stringify({ chapter });
-        const url = "./local-api/image-cache/chapter/cancel";
-        if (typeof navigator.sendBeacon === "function") {
-            try {
-                if (navigator.sendBeacon(url, new Blob([body], { type: "application/json" }))) return true;
-            } catch {
-                // Safari may reject a beacon while navigating or when its queue is full.
-            }
-        }
-        fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
-            cache: "no-store",
-            keepalive: true,
-        }).catch(() => {});
-        return true;
     }
 
     async readCache(kind, key, maxAgeSeconds) {

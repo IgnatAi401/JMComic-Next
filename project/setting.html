@@ -1,15 +1,27 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" /><meta name="view-transition" content="same-origin" /><meta name="theme-color" media="(prefers-color-scheme: light)" content="#030303" /><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030303" />
-<title>JMComic · 设置</title><link rel="stylesheet" href="./style/basic.css?v=20260901-yellow2" /><link rel="stylesheet" href="./style/setting.css?v=20260901-yellow2" /><link rel="stylesheet" href="./style/jmcomic-next.css?v=20260901-card-cleanup1" /></head>
-<body><div class="root"><nav class="nav"></nav><nav class="mob-nav"></nav>
-<div class="switch-server"><span>图源1</span><div class="sh-sr-cr"><div class="server-name">图源1</div><div class="server-name">图源2</div><div class="server-name">图源3</div><div class="server-name">图源4</div><div class="server-name">图源5</div><div class="server-name">图源6</div></div></div>
-<aside class="app-dock" data-current="setting" aria-label="快捷导航"><span class="app-dock-glass" aria-hidden="true"></span><span class="app-dock-ambient" aria-hidden="true"></span><div class="app-dock-content">
-<a class="app-dock-item" data-dock="index" href="./index.html" aria-label="发现"><span class="app-dock-glyph icon-home" aria-hidden="true"></span><span class="app-dock-label">发现</span></a><button class="app-dock-item dock-search-trigger" data-dock="search" type="button" aria-label="搜索"><span class="app-dock-glyph icon-search" aria-hidden="true"></span><span class="app-dock-label">搜索</span></button><a class="app-dock-item" data-dock="latest" href="./latest.html" aria-label="最新"><span class="app-dock-glyph icon-latest" aria-hidden="true"></span><span class="app-dock-label">最新</span></a><a class="app-dock-item" data-dock="categories" href="./categories.html" aria-label="分类"><span class="app-dock-glyph icon-categories" aria-hidden="true"></span><span class="app-dock-label">分类</span></a>
-<a class="app-dock-item" data-dock="library" href="./library.html" aria-label="收藏与历史"><span class="app-dock-glyph icon-library" aria-hidden="true"></span><span class="app-dock-label">收藏与历史</span></a><a class="app-dock-item app-dock-messages" data-dock="messages" href="./messages.html" aria-label="消息与追更"><span class="app-dock-glyph icon-messages" aria-hidden="true"></span><b class="dock-messages-badge" hidden>0</b><span class="app-dock-label">消息与追更</span></a><a class="app-dock-item" data-dock="ai" href="./ai.html" aria-label="AI 推荐"><span class="app-dock-glyph icon-ai" aria-hidden="true"></span><span class="app-dock-label">AI 推荐</span></a><span class="app-dock-divider" aria-hidden="true"></span><a class="app-dock-item app-dock-settings" data-dock="setting" href="./setting.html" aria-label="设置" aria-current="page"><span class="app-dock-glyph icon-settings" aria-hidden="true"></span><span class="app-dock-label">设置</span></a>
-</div></aside>
-<main class="setting-body"><header class="page-hero"><p class="eyebrow">阅读偏好</p><h1 class="title">让阅读更顺手</h1><p>管理图片线路、账号和 AI 接口。</p></header>
-<div class="settings-grid"><section class="setting-card"><span class="setting-index">01</span><div><h2>图片线路</h2><p>如果图片加载缓慢，可使用顶栏的图源图标切换线路。</p></div><span class="status-pill">本机设置</span></section>
-<section class="setting-card"><span class="setting-index">02</span><div><h2>账号与收藏</h2><p>配置登录账号，管理收藏与登录状态。</p></div><button class="ghost-btn account-trigger account-trigger-inline" type="button">配置账号</button></section>
-<section class="setting-card"><span class="setting-index">03</span><div><h2>AI 接口</h2><p>推荐使用百炼 qwen3-vl-embedding 多模态向量 API；画像文案和标题翻译可另行配置 OpenAI 兼容 LLM。</p></div><button class="ghost-btn account-trigger account-trigger-inline" data-open-ai="true" type="button">配置 AI</button></section>
-</div>
-</main></div><script type="module" src="./src/pages/setting.js?v=20260827-7"></script></body></html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0c0c0e" media="(min-width: 1100px) and (min-height: 600px)" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="./image/b5c2a091-eb74-4b78-99dd-b52dc2a1dfe5.png" />
+    <title>设置 · JMComic</title>
+    <link rel="stylesheet" href="./style/app.css" />
+    <link rel="stylesheet" href="./style/workspace.css" />
+</head>
+<body data-page="setting" class="">
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <main class="app-main" id="main" tabindex="-1"><div class="page setting-page">
+<header class="page-head"><div><span class="eyebrow">按你的习惯</span><h1 class="page-title">设置</h1><p class="page-lede">账号与接口跟随本地服务，阅读设置仅保存在当前设备。</p></div></header>
+<div class="settings-layout">
+<section class="section"><div class="section-head"><h2 class="section-title">阅读体验</h2></div><div class="panel" id="settings-reading"></div></section>
+<section class="section"><div class="section-head"><h2 class="section-title">账号与智能推荐</h2></div>
+<div class="group">
+<button class="group-row" type="button" data-open-account><span class="group-row-copy"><strong>JM 账号</strong><small data-account-name>读取配置中</small></span><span aria-hidden="true">↗</span></button>
+<button class="group-row" type="button" data-open-account="embedding"><span class="group-row-copy"><strong>Qwen 多模态向量</strong><small>封面与标题的特征，用于本地推荐排序</small></span><span aria-hidden="true">↗</span></button>
+<button class="group-row" type="button" data-open-account="llm"><span class="group-row-copy"><strong>语言模型（可选）</strong><small>偏好概述、评语提取与标题翻译</small></span><span aria-hidden="true">↗</span></button></div></section>
+<section class="section"><div class="section-head"><h2 class="section-title">历史与资料</h2></div><div class="group" data-navigation-scope="same-tab"><a class="group-row" href="./history-migration.html"><span class="group-row-copy"><strong>迁移旧浏览器历史</strong><small>将此浏览器中的旧阅读、随机历史合并到本地服务</small></span><span aria-hidden="true">→</span></a><a class="group-row" href="./library.html?view=ratings"><span class="group-row-copy"><strong>我的评价</strong><small>查看总评分、评语和标签偏好</small></span><span aria-hidden="true">→</span></a></div></section></div></div></main>
+    <script type="module" src="./src/pages/setting.js"></script>
+</body>
+</html>

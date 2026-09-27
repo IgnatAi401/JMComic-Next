@@ -1,25 +1,26 @@
 import { jmApi } from "../api/JmcomicApi.js";
-import { NavManager } from "../components/general/NavManager.js";
-import { setting } from "../components/general/Setting.js";
-import { SwitchServerBtnManager } from "../components/general/SwitchServerBtnManager.js";
-import { LatestContainerManager } from "../components/latest/LatestContainerManager.js";
-import { renderPageError } from "../utils/PageError.js";
-
-class LatestPage {
-    navManager
-    latestContainerManager
-    switchServerBtnManager
-    constructor() {}
-    async init() {
-        setting.init()
-        this.navManager=new NavManager()
-        this.navManager.init()
-        this.switchServerBtnManager=new SwitchServerBtnManager()
-        this.switchServerBtnManager.init()
-        await jmApi.init();
-        this.latestContainerManager=new LatestContainerManager()
-        this.latestContainerManager.init()
-    }
+import { mountShell } from "../ui/shell.js";
+import { Feed } from "../ui/feed.js";
+import { comicCardHtml } from "../ui/comic-card.js";
+import { hydrateCovers } from "../ui/covers.js";
+import { renderPageError, stateHtml } from "../ui/states.js";
+mountShell();
+const grid = document.querySelector("[data-results]");
+const seen = new Set();
+async function init() {
+    await jmApi.init();
+    const feed = new Feed({ footer: document.querySelector("[data-feed]"), loadPage: async (page, current) => {
+        const result = await jmApi.getLatestContent(page);
+        if (!current()) return {};
+        const items = Array.isArray(result) ? result : result?.content || [];
+        const unique = items.filter((item) => { const id = String(item.id); if (seen.has(id)) return false; seen.add(id); return true; });
+        grid.querySelector(".state")?.remove();
+        grid.insertAdjacentHTML("beforeend", unique.map((item) => comicCardHtml(item)).join(""));
+        if (!seen.size) grid.innerHTML = stateHtml({title:"暂时没有更新"});
+        hydrateCovers(grid);
+        return { done: !items.length || !unique.length, count: unique.length };
+    }});
+    document.querySelector("[data-refresh]").addEventListener("click", () => { grid.replaceChildren(); seen.clear(); feed.restart(); });
+    await feed.restart();
 }
-const app = new LatestPage();
-app.init().catch((error) => renderPageError(".latest-cr", error, { title: "最新内容加载失败" }));
+init().catch((error) => renderPageError(grid, error));

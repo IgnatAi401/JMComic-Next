@@ -8,7 +8,6 @@ import base64
 import hashlib
 import ipaddress
 import json
-import mimetypes
 import os
 import re
 import shutil
@@ -21,7 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from html import unescape as html_unescape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from local_features import LocalFeatureError, LocalFeatureStore
@@ -32,9 +31,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = ROOT_DIR / "project"
 DATA_DIR = PROJECT_DIR / "data"
 CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
-IMAGE_CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "images"
 ACCOUNT_FILE = DATA_DIR / "account.json"
-SETTINGS_FILE = DATA_DIR / "settings.json"
 local_features = LocalFeatureStore(DATA_DIR)
 embedding_runtime = QwenEmbeddingRuntime(local_features)
 
@@ -49,12 +46,6 @@ MAX_PROXY_RESPONSE_BYTES = 4 * 1024 * 1024
 WEB_CHAPTER_CACHE_AGE = 24 * 60 * 60
 JM_WEB_REDIRECT_URL = "https://jm365.work/3YeBdF"
 JM_WEB_ORIGIN_TTL = 60 * 60
-MAX_IMAGE_CACHE_AGE = 14 * 24 * 60 * 60
-MAX_IMAGE_CACHE_FILES = 10000
-MAX_IMAGE_CACHE_BYTES = 2 * 1024 * 1024 * 1024
-MAX_SINGLE_IMAGE_BYTES = 128 * 1024 * 1024
-MAX_IMAGE_PREFETCH_JOBS = 20
-MAX_IMAGE_PREFETCH_WORKERS = 100
 PROXY_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?$", re.IGNORECASE)
 PROXY_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
 JM_TOKEN_SECRET = "185Hcomic3PAPP7R"
@@ -71,22 +62,10 @@ PROXY_PATH_METHODS = {
     "/album_sertracking": {"GET", "POST"},
     "/album_tracking": {"POST"},
 }
-IMAGE_PROXY_HOSTS = frozenset({
-    "cdn-msp.jmapiproxy1.cc",
-    "cdn-msp.jmapiproxy2.cc",
-    "cdn-msp2.jmapiproxy2.cc",
-    "cdn-msp3.jmapiproxy2.cc",
-    "cdn-msp.jmapinodeudzn.net",
-    "cdn-msp3.jmapinodeudzn.net",
-})
-IMAGE_CACHE_LOCKS = tuple(threading.Lock() for _ in range(64))
 CACHE_CLEANUP_LOCK = threading.Lock()
-IMAGE_CLEANUP_LOCK = threading.Lock()
-IMAGE_WRITE_LOCK = threading.Lock()
 PROXY_DNS_CACHE_TTL = 5 * 60
 PROXY_DNS_CACHE = {}
 PROXY_DNS_CACHE_LOCK = threading.Lock()
-image_cache_writes = 0
 jm_web_origin = ""
 jm_web_origin_expires = 0.0
 jm_web_origin_lock = threading.Lock()
@@ -145,7 +124,6 @@ def atomic_json_write(path: Path, value: object, private: bool = False) -> None:
 def ensure_runtime_files() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not ACCOUNT_FILE.exists():
         atomic_json_write(ACCOUNT_FILE, {"username": "", "password": ""}, private=True)
     else:
@@ -153,8 +131,6 @@ def ensure_runtime_files() -> None:
             ACCOUNT_FILE.chmod(0o600)
         except OSError:
             pass
-    if not SETTINGS_FILE.exists():
-        atomic_json_write(SETTINGS_FILE, {"image_load_batch_size": 5})
 
 
 def read_account() -> dict[str, str]:
@@ -168,17 +144,6 @@ def read_account() -> dict[str, str]:
         "username": str(data.get("username") or ""),
         "password": str(data.get("password") or ""),
     }
-
-
-def read_settings() -> dict[str, int]:
-    try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-        batch_size = int(data.get("image_load_batch_size") or 5)
-    except (OSError, ValueError, TypeError):
-        batch_size = 5
-    return {"image_load_batch_size": min(500, max(1, batch_size))}
 
 
 class JmSessionError(RuntimeError):
@@ -526,401 +491,6 @@ def get_web_chapter_names(album_id: object) -> dict:
     raise ChapterNameError(str(last_error or "JM 网文章节名称读取失败"))
 
 
-class ImageCacheError(RuntimeError):
-    pass
-
-
-def image_cache_files() -> list[Path]:
-    return [path for path in IMAGE_CACHE_DIR.glob("*.img") if path.is_file()]
-
-
-def cleanup_image_cache() -> None:
-    if not IMAGE_CLEANUP_LOCK.acquire(blocking=False):
-        return
-    try:
-        now = time.time()
-        for temporary in IMAGE_CACHE_DIR.glob("*.tmp"):
-            try:
-                if now - temporary.stat().st_mtime > 60 * 60:
-                    temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
-        entries = []
-        total_bytes = 0
-        for path in image_cache_files():
-            try:
-                stat = path.stat()
-                if now - stat.st_mtime > MAX_IMAGE_CACHE_AGE:
-                    path.unlink(missing_ok=True)
-                    continue
-                entries.append((stat.st_mtime, stat.st_size, path))
-                total_bytes += stat.st_size
-            except OSError:
-                continue
-        entries.sort(key=lambda entry: entry[0])
-        while entries and (
-            len(entries) > MAX_IMAGE_CACHE_FILES
-            or total_bytes > MAX_IMAGE_CACHE_BYTES
-        ):
-            _, size, path = entries.pop(0)
-            try:
-                path.unlink(missing_ok=True)
-                total_bytes -= size
-            except OSError:
-                pass
-    finally:
-        IMAGE_CLEANUP_LOCK.release()
-
-
-def normalize_image_request(chapter: object, path_name: object, servers: object) -> tuple[str, str, list[str]]:
-    chapter_id = str(chapter or "").strip()
-    image_path = str(path_name or "").strip().lstrip("/")
-    candidates = servers if isinstance(servers, list) else []
-    if not re.fullmatch(r"\d{1,16}", chapter_id):
-        raise ImageCacheError("章节编号无效")
-    if not image_path or len(image_path) > 1000 or "\x00" in image_path or "\\" in image_path:
-        raise ImageCacheError("图片路径无效")
-    parts = image_path.split("/")
-    if any(not part or part in {".", ".."} for part in parts):
-        raise ImageCacheError("图片路径无效")
-    normalized_servers = []
-    for candidate in candidates[:6]:
-        hostname = str(candidate or "").strip().lower()
-        if hostname in IMAGE_PROXY_HOSTS and hostname not in normalized_servers:
-            normalized_servers.append(hostname)
-    if not normalized_servers:
-        raise ImageCacheError("没有可用的图片线路")
-    return chapter_id, image_path, normalized_servers
-
-
-def image_cache_path(chapter_id: str, image_path: str) -> Path:
-    digest = hashlib.sha256(f"{chapter_id}\0{image_path}".encode("utf-8")).hexdigest()
-    return IMAGE_CACHE_DIR / f"{digest}.img"
-
-
-def image_content_type(path: Path, image_path: str) -> str:
-    try:
-        with path.open("rb") as stream:
-            signature = stream.read(16)
-    except OSError:
-        signature = b""
-    if signature.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if signature.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if signature.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if signature.startswith(b"RIFF") and signature[8:12] == b"WEBP":
-        return "image/webp"
-    guessed = mimetypes.guess_type(image_path)[0]
-    return guessed if guessed and guessed.startswith("image/") else "image/jpeg"
-
-
-def record_image_cache_write() -> None:
-    global image_cache_writes
-    with IMAGE_WRITE_LOCK:
-        image_cache_writes += 1
-        should_cleanup = image_cache_writes % 25 == 0
-    if should_cleanup:
-        cleanup_image_cache()
-
-
-def ensure_image_cached(chapter: object, path_name: object, servers: object) -> tuple[Path, str]:
-    chapter_id, image_path, normalized_servers = normalize_image_request(chapter, path_name, servers)
-    target = image_cache_path(chapter_id, image_path)
-    lock = IMAGE_CACHE_LOCKS[int(target.stem[:8], 16) % len(IMAGE_CACHE_LOCKS)]
-    with lock:
-        try:
-            if target.stat().st_size > 0:
-                os.utime(target, None)
-                return target, image_content_type(target, image_path)
-        except OSError:
-            pass
-
-        encoded_path = "/".join(quote(part, safe="") for part in image_path.split("/"))
-        last_error = None
-        for server in normalized_servers:
-            temporary = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            request = Request(
-                f"https://{server}/media/photos/{quote(chapter_id, safe='')}/{encoded_path}",
-                headers={"Accept": "image/*", "User-Agent": "JMComic-WebUI-Local/1.0"},
-                method="GET",
-            )
-            try:
-                with urlopen(request, timeout=15) as response, temporary.open("wb") as output:
-                    content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower()
-                    if content_type and not content_type.startswith("image/") and content_type != "application/octet-stream":
-                        raise ImageCacheError("图片线路返回了非图片内容")
-                    total = 0
-                    while True:
-                        chunk = response.read(256 * 1024)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if total > MAX_SINGLE_IMAGE_BYTES:
-                            raise ImageCacheError("单张图片超过 128 MB 限制")
-                        output.write(chunk)
-                    if total <= 0:
-                        raise ImageCacheError("图片内容为空")
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, target)
-                record_image_cache_write()
-                return target, image_content_type(target, image_path)
-            except (HTTPError, URLError, OSError, ValueError, ImageCacheError) as error:
-                last_error = error
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        raise ImageCacheError(str(last_error or "所有图片线路均加载失败"))
-
-
-class ImagePrefetchJob:
-    def __init__(
-        self,
-        chapter_id: str,
-        image_paths: list[str],
-        servers: list[str],
-        concurrency: int,
-        worker_slots: threading.BoundedSemaphore,
-        max_workers: int,
-        on_finished,
-    ) -> None:
-        self.chapter_id = chapter_id
-        self.image_paths = tuple(dict.fromkeys(image_paths))
-        self.servers = tuple(servers)
-        self.events = {path: threading.Event() for path in self.image_paths}
-        self.errors = {}
-        self.lock = threading.RLock()
-        self.worker_slots = worker_slots
-        self.max_workers = max_workers
-        self.on_finished = on_finished
-        self.desired_workers = min(self.max_workers, max(1, int(concurrency)))
-        self.finished_count = 0
-        self.next_index = 0
-        self.stop_event = threading.Event()
-        self.done_event = threading.Event()
-        self.coordinator = threading.Thread(target=self.run, daemon=True)
-        self.coordinator.start()
-
-    @property
-    def completed(self) -> bool:
-        return self.done_event.is_set()
-
-    @property
-    def cancelled(self) -> bool:
-        return self.stop_event.is_set()
-
-    def cancel(self) -> None:
-        self.stop_event.set()
-        with self.lock:
-            for image_path, event in self.events.items():
-                if not event.is_set():
-                    self.errors.setdefault(image_path, "章节下载已取消")
-                    event.set()
-
-    def set_concurrency(self, concurrency: int) -> None:
-        target = min(self.max_workers, max(1, int(concurrency)))
-        with self.lock:
-            self.desired_workers = target
-
-    def run(self) -> None:
-        try:
-            while True:
-                with self.lock:
-                    if self.stop_event.is_set() or self.next_index >= len(self.image_paths):
-                        return
-                    batch_size = self.desired_workers
-                    batch = self.image_paths[self.next_index:self.next_index + batch_size]
-                    self.next_index += len(batch)
-
-                threads = []
-                stopped_while_starting = False
-                for image_path in batch:
-                    while not self.stop_event.is_set():
-                        if self.worker_slots.acquire(timeout=0.1):
-                            break
-                    else:
-                        stopped_while_starting = True
-                        break
-                    if self.stop_event.is_set():
-                        self.worker_slots.release()
-                        stopped_while_starting = True
-                        break
-                    try:
-                        thread = threading.Thread(
-                            target=self.download_one_bounded,
-                            args=(image_path,),
-                            daemon=True,
-                        )
-                        thread.start()
-                    except Exception as error:
-                        self.worker_slots.release()
-                        self.finish_with_error(image_path, error)
-                    else:
-                        threads.append(thread)
-                for thread in threads:
-                    thread.join()
-                if stopped_while_starting:
-                    return
-        except Exception as error:
-            self.fail_pending(error)
-        finally:
-            try:
-                self.on_finished()
-            finally:
-                self.done_event.set()
-
-    def download_one_bounded(self, image_path: str) -> None:
-        try:
-            self.download_one(image_path)
-        finally:
-            self.worker_slots.release()
-
-    def finish_with_error(self, image_path: str, error: Exception) -> None:
-        with self.lock:
-            self.errors[image_path] = str(error)
-            self.finished_count += 1
-        self.events[image_path].set()
-
-    def fail_pending(self, error: Exception) -> None:
-        message = str(error) or "章节下载任务异常"
-        with self.lock:
-            for image_path, event in self.events.items():
-                if event.is_set():
-                    continue
-                self.errors.setdefault(image_path, message)
-                event.set()
-            self.finished_count = max(self.finished_count, len(self.image_paths))
-
-    def download_one(self, image_path: str) -> None:
-        try:
-            ensure_image_cached(self.chapter_id, image_path, list(self.servers))
-        except Exception as error:
-            with self.lock:
-                self.errors[image_path] = str(error)
-        finally:
-            with self.lock:
-                self.finished_count += 1
-            self.events[image_path].set()
-
-    def wait_for(self, image_path: str, timeout: float = 130) -> tuple[Path, str]:
-        event = self.events.get(image_path)
-        if event is None:
-            raise ImageCacheError("图片不在当前章节下载队列中")
-        if not event.wait(timeout):
-            raise ImageCacheError("等待顺序下载超时")
-        with self.lock:
-            error = self.errors.get(image_path)
-        if error:
-            raise ImageCacheError(error)
-        path = image_cache_path(self.chapter_id, image_path)
-        try:
-            if path.stat().st_size <= 0:
-                raise OSError
-        except OSError as error:
-            raise ImageCacheError("本地图片缓存不存在") from error
-        os.utime(path, None)
-        return path, image_content_type(path, image_path)
-
-
-class ImagePrefetchManager:
-    def __init__(
-        self,
-        max_active_jobs: int = MAX_IMAGE_PREFETCH_JOBS,
-        max_workers: int = MAX_IMAGE_PREFETCH_WORKERS,
-    ) -> None:
-        self.lock = threading.RLock()
-        self.jobs = {}
-        self.max_active_jobs = max(1, int(max_active_jobs))
-        self.max_workers = max(1, int(max_workers))
-        self.job_slots = threading.BoundedSemaphore(self.max_active_jobs)
-        self.worker_slots = threading.BoundedSemaphore(self.max_workers)
-        self.stopped = False
-
-    def release_job_slot(self) -> None:
-        self.job_slots.release()
-
-    def enqueue(self, chapter: object, paths: object, servers: object, concurrency: object) -> ImagePrefetchJob:
-        with self.lock:
-            if self.stopped:
-                raise ImageCacheError("图片预取服务已停止")
-        if not isinstance(paths, list) or not paths or len(paths) > 5000:
-            raise ImageCacheError("章节图片清单无效")
-        try:
-            worker_count = min(self.max_workers, max(1, int(concurrency)))
-        except (TypeError, ValueError) as error:
-            raise ImageCacheError("图片下载并发数量无效") from error
-        normalized_paths = []
-        chapter_id = ""
-        normalized_servers = []
-        for path in paths:
-            current_chapter, current_path, current_servers = normalize_image_request(chapter, path, servers)
-            chapter_id = current_chapter
-            normalized_servers = current_servers
-            normalized_paths.append(current_path)
-        normalized_sequence = tuple(dict.fromkeys(normalized_paths))
-        with self.lock:
-            if self.stopped:
-                raise ImageCacheError("图片预取服务已停止")
-            for old_id, old_job in list(self.jobs.items()):
-                if old_job.completed or old_job.cancelled:
-                    self.jobs.pop(old_id, None)
-            job = self.jobs.get(chapter_id)
-            if job and not job.cancelled and not job.completed and job.image_paths == normalized_sequence:
-                job.set_concurrency(worker_count)
-                return job
-            if not self.job_slots.acquire(blocking=False):
-                raise ImageCacheError("后台章节下载任务过多，请稍后再试")
-            try:
-                next_job = ImagePrefetchJob(
-                    chapter_id,
-                    normalized_paths,
-                    normalized_servers,
-                    worker_count,
-                    self.worker_slots,
-                    self.max_workers,
-                    self.release_job_slot,
-                )
-            except Exception:
-                self.job_slots.release()
-                raise
-            if job:
-                job.cancel()
-            job = next_job
-            self.jobs[chapter_id] = job
-            return job
-
-    def get(self, chapter_id: str):
-        with self.lock:
-            return self.jobs.get(chapter_id)
-
-    def cancel(self, chapter: object) -> bool:
-        chapter_id = str(chapter or "").strip()
-        if not re.fullmatch(r"\d{1,16}", chapter_id):
-            return False
-        with self.lock:
-            job = self.jobs.pop(chapter_id, None)
-        if job:
-            job.cancel()
-            return True
-        return False
-
-    def stop(self) -> None:
-        with self.lock:
-            if self.stopped:
-                return
-            self.stopped = True
-            jobs = list(self.jobs.values())
-            self.jobs.clear()
-        for job in jobs:
-            job.cancel()
-
-
-image_prefetch_manager = ImagePrefetchManager()
-
-
 class LocalHandler(SimpleHTTPRequestHandler):
     cache_writes = 0
     cache_write_lock = threading.Lock()
@@ -953,30 +523,6 @@ class LocalHandler(SimpleHTTPRequestHandler):
             except (LocalFeatureError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
-        if parsed.path == "/local-api/image":
-            query = parse_qs(parsed.query)
-            servers = str(query.get("servers", [""])[0]).split(",")
-            try:
-                chapter_id, image_path, normalized_servers = normalize_image_request(
-                    query.get("chapter", [""])[0], query.get("path", [""])[0], servers,
-                )
-                path = image_cache_path(chapter_id, image_path)
-                try:
-                    cached = path.stat().st_size > 0
-                except OSError:
-                    cached = False
-                job = image_prefetch_manager.get(chapter_id)
-                if cached:
-                    os.utime(path, None)
-                    content_type = image_content_type(path, image_path)
-                elif job:
-                    path, content_type = job.wait_for(image_path)
-                else:
-                    path, content_type = ensure_image_cached(chapter_id, image_path, normalized_servers)
-                self.send_image_file(path, content_type)
-            except ImageCacheError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
-            return
         if parsed.path == "/local-api/account":
             account = read_account()
             session_state = jm_session.snapshot()
@@ -985,9 +531,6 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 "username": account["username"],
                 **session_state,
             })
-            return
-        if parsed.path == "/local-api/settings":
-            self.send_json(read_settings())
             return
         if parsed.path == "/local-api/chapter-names":
             try:
@@ -1118,43 +661,6 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 self.send_json({"authenticated": True, "user": state["user"]})
             except JmSessionError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.UNAUTHORIZED)
-            return
-        if parsed.path == "/local-api/image-cache/chapter":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                job = image_prefetch_manager.enqueue(
-                    body.get("chapter"), body.get("paths"), body.get("servers"), body.get("concurrency"),
-                )
-                self.send_json({"queued": len(job.image_paths), "concurrency": job.desired_workers})
-            except ImageCacheError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/image-cache/chapter/cancel":
-            body = self.read_json_body()
-            if body is None:
-                return
-            self.send_json({"cancelled": image_prefetch_manager.cancel(body.get("chapter"))})
-            return
-        if parsed.path == "/local-api/settings":
-            body = self.read_json_body()
-            if body is None:
-                return
-            raw_batch_size = str(body.get("image_load_batch_size") or "").strip()
-            try:
-                if not re.fullmatch(r"\d+", raw_batch_size):
-                    raise ValueError
-                batch_size = int(raw_batch_size)
-            except (TypeError, ValueError):
-                self.send_json({"error": "并发加载数量必须是整数"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            if batch_size < 1 or batch_size > 500:
-                self.send_json({"error": "并发加载数量必须在 1 到 500 之间"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            settings = {"image_load_batch_size": batch_size}
-            atomic_json_write(SETTINGS_FILE, settings)
-            self.send_json(settings)
             return
         if parsed.path == "/local-api/ai/config":
             body = self.read_json_body()
@@ -1406,11 +912,6 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
-            for path in image_cache_files():
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
             self.send_json({"cleared": True})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -1457,25 +958,6 @@ class LocalHandler(SimpleHTTPRequestHandler):
             # Safari may cancel an in-flight request when a view is replaced.
             self.close_connection = True
 
-    def send_image_file(self, path: Path, content_type: str) -> None:
-        try:
-            stream = path.open("rb")
-        except OSError as error:
-            raise ImageCacheError("本地图片缓存读取失败，请重试") from error
-        # Hold the descriptor before sending headers: cache cleanup may unlink
-        # or replace the path while Safari is receiving this image.
-        with stream:
-            try:
-                size = os.fstat(stream.fileno()).st_size
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(size))
-                self.end_headers()
-                shutil.copyfileobj(stream, self.wfile, length=256 * 1024)
-            except OSError:
-                self.close_connection = True
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run JMComic WebUI locally")
     parser.add_argument("--host", default="127.0.0.1")
@@ -1484,19 +966,15 @@ def main() -> None:
 
     ensure_runtime_files()
     cleanup_cache()
-    cleanup_image_cache()
     server = ThreadingHTTPServer((args.host, args.port), LocalHandler)
     print(f"JMComic WebUI: http://{args.host}:{args.port}/")
     print(f"账号配置: {ACCOUNT_FILE}")
-    print(f"阅读设置: {SETTINGS_FILE}")
     print(f"缓存目录: {CACHE_DIR}（最多 {MAX_CACHE_FILES} 项 / {MAX_CACHE_BYTES // 1024 // 1024} MB / 7 天）")
-    print(f"图片缓存: {IMAGE_CACHE_DIR}（最多 {MAX_IMAGE_CACHE_FILES} 项 / {MAX_IMAGE_CACHE_BYTES // 1024 // 1024 // 1024} GB / 14 天）")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        image_prefetch_manager.stop()
         embedding_runtime.stop()
         server.server_close()
 

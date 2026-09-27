@@ -1,10 +1,8 @@
+import { mountShell, openAccount } from "../ui/shell.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
-import { NavManager } from "../components/general/NavManager.js";
-import { setting } from "../components/general/Setting.js";
-import { SwitchServerBtnManager } from "../components/general/SwitchServerBtnManager.js";
-import { showToast } from "../components/general/Toast.js";
-import { renderPageError } from "../utils/PageError.js";
+import { showToast } from "../ui/toast.js";
+import { renderPageError } from "../ui/states.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -30,14 +28,18 @@ export class MessagesPage {
     trackingLoaded = false;
 
     async init() {
-        setting.init();
-        new NavManager().init();
-        new SwitchServerBtnManager().init();
+        mountShell();
         this.status = document.querySelector(".message-status");
         this.notificationList = document.querySelector(".notification-list");
         this.trackingList = document.querySelector(".tracking-list");
         this.moreButton = document.querySelector(".tracking-more");
         this.bindEvents();
+        window.addEventListener("jm-auth-change", () => {
+            const key = authSession.isConfigured ? String(authSession.user?.uid || authSession.configuredUsername || "") : "";
+            if (key === this.observedAccountKey) return;
+            this.observedAccountKey = key;
+            this.loadAll();
+        });
         await this.loadAll();
     }
 
@@ -65,7 +67,7 @@ export class MessagesPage {
             }
         });
         document.addEventListener("click", (event) => {
-            if (event.target.closest(".message-login")) document.querySelector(".account-trigger")?.click();
+            if (event.target.closest(".message-login")) openAccount();
         });
     }
 
@@ -134,7 +136,7 @@ export class MessagesPage {
     }
 
     renderConfigGate() {
-        const html = '<div class="message-empty"><p>配置账号密码后，才能读取通知和连载追踪。</p><button class="primary-btn message-login" type="button">配置账号</button></div>';
+        const html = '<div class="message-empty"><p>配置账号密码后，才能读取通知和连载追踪。</p><button class="btn btn-primary message-login" type="button">配置账号</button></div>';
         this.notificationList.innerHTML = html;
         this.trackingList.innerHTML = html;
         this.status.textContent = "尚未配置账号";

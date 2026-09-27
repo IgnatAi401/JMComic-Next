@@ -1,12 +1,14 @@
+import { mountShell, openAccount } from "../ui/shell.js";
+import { comicCardHtml } from "../ui/comic-card.js";
+import { hydrateCovers } from "../ui/covers.js";
+import { stateHtml } from "../ui/states.js";
+import { confirmAction } from "../ui/confirm.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
-import { NavManager } from "../components/general/NavManager.js";
-import { setting } from "../components/general/Setting.js";
-import { SwitchServerBtnManager } from "../components/general/SwitchServerBtnManager.js";
-import { showToast } from "../components/general/Toast.js";
+import { showToast } from "../ui/toast.js";
 import { libraryStore } from "../data/LibraryStore.js";
 import { localRuntime } from "../local/LocalRuntime.js";
-import { renderPageError } from "../utils/PageError.js";
+import { renderPageError } from "../ui/states.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -25,15 +27,14 @@ class LibraryPage {
     remoteRequests = new Set();
 
     async init() {
-        setting.init();
-        new NavManager().init();
-        new SwitchServerBtnManager().init();
+        mountShell();
         this.grid = document.querySelector(".library-grid");
         this.notice = document.querySelector(".library-notice");
         this.folderTabs = document.querySelector(".folder-tabs");
         this.loadMoreButton = document.querySelector(".load-more");
         this.ratingFilters = document.querySelector(".rating-filters");
         this.bindEvents();
+        window.addEventListener("jm-library-change", () => this.render());
         const requestedView = new URLSearchParams(window.location.search).get("view");
         this.selectView(["favorites", "ratings", "history", "random"].includes(requestedView) ? requestedView : "favorites");
         try {
@@ -68,7 +69,7 @@ class LibraryPage {
                 return;
             }
             if (!authSession.isConfigured) {
-                document.querySelector(".account-trigger").click();
+                openAccount();
                 return;
             }
             this.syncRemote();
@@ -76,6 +77,7 @@ class LibraryPage {
         document.querySelector(".clear-history").addEventListener("click", async (event) => {
             const button = event.currentTarget;
             const random = this.view === "random";
+            if (!await confirmAction({ title: random ? "清空随机历史？" : "清空阅读历史？", message: "会清空本地服务中的对应历史列表，所有浏览器都会同步。评价与收藏不受影响。", label: "确认清空" })) return;
             button.disabled = true;
             try {
                 if (random) await libraryStore.clearRandomHistory();
@@ -90,20 +92,20 @@ class LibraryPage {
         });
         this.loadMoreButton.addEventListener("click", () => this.loadRemotePage(this.page + 1, true));
         this.grid.addEventListener("click", (event) => {
-            if (event.target.closest(".login-library")) document.querySelector(".account-trigger").click();
+            if (event.target.closest(".login-library")) openAccount();
         });
         window.addEventListener("jm-auth-change", () => {
-            if (this.view === "favorites" && authSession.isConfigured && authSession.isLoggedIn && !this.#hasCurrentRemoteRequest() && !this.remoteItems.length) {
-                this.syncRemote();
-            } else if (!authSession.isConfigured) {
-                this.remoteRequestVersion += 1;
-                this.remoteItems = [];
-                this.remoteTotal = 0;
-                this.folderTabs.innerHTML = "";
-                this.loadMoreButton.hidden = true;
-                this.#syncRemoteButtons();
-                this.render();
-            }
+            const key = authSession.isConfigured ? String(authSession.user?.uid || authSession.configuredUsername || "") : "";
+            if (key === this.accountKey) return;
+            this.accountKey = key;
+            this.remoteRequestVersion += 1;
+            this.remoteItems = [];
+            this.remoteTotal = 0;
+            this.folderTabs.replaceChildren();
+            this.loadMoreButton.hidden = true;
+            this.#syncRemoteButtons();
+            this.render();
+            if (key && this.view === "favorites") this.syncRemote();
         });
     }
 
@@ -112,7 +114,7 @@ class LibraryPage {
         document.querySelectorAll(".library-tabs button").forEach((button) => {
             const active = button.dataset.view === view;
             button.classList.toggle("active", active);
-            button.setAttribute("aria-selected", String(active));
+            button.setAttribute("aria-pressed", String(active));
         });
         document.querySelector(".sync-btn").hidden = view !== "favorites";
         const clearButton = document.querySelector(".clear-history");
@@ -129,7 +131,7 @@ class LibraryPage {
         };
         document.querySelector(".sync-state").textContent = labels[view];
         this.notice.className = "library-notice";
-        this.notice.textContent = view === "random" ? "这里保留主页验证通过的随机漫画，以及你为它们提交的兴趣反馈。" : "";
+        this.notice.textContent = view === "random" ? "这里保留在发现页验证通过的随机作品。" : "";
         if (updateUrl) {
             const url = new URL(window.location.href);
             url.searchParams.set("view", view);
@@ -155,6 +157,7 @@ class LibraryPage {
     async syncAllFavoritesToLocal(version = this.remoteRequestVersion) {
         try {
             const items = await jmApi.getAllFavorites();
+            if (version !== this.remoteRequestVersion) return;
             const result = await localRuntime.syncLocalFavorites(items.map((item) => ({
                 id: item.id,
                 title: item.name,
@@ -210,7 +213,7 @@ class LibraryPage {
                 document.querySelector(".sync-state").textContent = `账号收藏 · ${this.remoteTotal}`;
                 this.notice.textContent = list.length ? "账号收藏已同步。" : "这个收藏夹暂时没有内容。";
                 this.notice.classList.add("success");
-                this.loadMoreButton.hidden = this.remoteItems.length >= this.remoteTotal;
+                this.loadMoreButton.hidden = !list.length || this.remoteItems.length >= this.remoteTotal;
                 this.render();
             }
             return true;
@@ -280,69 +283,22 @@ class LibraryPage {
 
     render() {
         if (this.view === "ratings") this.renderRatingFilters();
-        const items = this.view === "random"
-            ? libraryStore.getRandomHistory()
-            : (this.view === "history" ? libraryStore.getHistory() : (this.view === "ratings" ? this.filteredRatings() : this.remoteItems));
-        if (this.view === "random" || this.view === "history") {
-            document.querySelector(".sync-state").textContent = `${this.view === "random" ? "随机发现" : "最近阅读"} · ${items.length}`;
-        }
-        this.grid.classList.add("random-history-grid");
-        if (this.view === "ratings") {
-            document.querySelector(".sync-state").textContent = `本地评价 · ${items.length} 本`;
-            if (!items.length && this.ratingFilter !== "all") {
-                const label = this.ratingFilter === "unrated" ? "未评分" : `${this.ratingFilter} 分`;
-                this.grid.innerHTML = `<div class="empty-library"><span>☆</span><h2>暂无${escapeHtml(label)}的漫画</h2><p>可以切换其他评分，或在漫画详情页保存评分后查看。</p></div>`;
-                return;
-            }
-        }
+        const items = this.view === "random" ? libraryStore.getRandomHistory() : this.view === "history" ? libraryStore.getHistory() : this.view === "ratings" ? this.filteredRatings() : this.remoteItems;
+        const names = { favorites: "账号收藏", ratings: "我的评价", history: "最近阅读", random: "随机历史" };
+        document.querySelector(".sync-state").textContent = `${names[this.view]} · ${items.length}`;
         if (!items.length) {
-            const favoriteCopy = authSession.isConfigured
-                ? "这个账号还没有收藏内容。"
-                : "配置账号密码后即可自动登录并同步收藏。";
-            const isRatings = this.view === "ratings";
-            const isRandom = this.view === "random";
-            const action = this.view === "favorites" && !authSession.isConfigured
-                ? '<button class="primary-btn login-library" type="button">配置账号</button>'
-                : '<a class="primary-btn" href="./index.html">去发现作品</a>';
-            this.grid.innerHTML = `<div class="empty-library"><span>${this.view === "favorites" ? "＋" : (isRatings ? "10" : "↺")}</span><h2>${this.view === "favorites" ? "账号收藏" : (isRatings ? "还没有本地评价" : (isRandom ? "还没有随机足迹" : "还没有阅读足迹"))}</h2><p>${this.view === "favorites" ? favoriteCopy : (isRatings ? "在漫画详情页评分、填写评语或设置标签偏好后会显示在这里。" : (isRandom ? "在主页点击“随机一本”，验证通过的作品会依次保存在这里。" : "开始阅读后，这里会记录最近打开的作品。"))}</p>${action}</div>`;
+            const needsAccount = this.view === "favorites" && !authSession.isConfigured;
+            this.grid.innerHTML = stateHtml({ title: needsAccount ? "连接你的收藏" : "这里暂时没有作品", message: needsAccount ? "配置账号后，同步收藏到书架。" : "开始阅读、保存评价，或换一个筛选条件。", action: needsAccount ? { label: "配置账号", attrs: 'data-open-account' } : { label: "去发现", href: "./index.html" } });
             return;
         }
-        this.grid.innerHTML = items.map((item) => this.view === "random" ? this.randomHistoryItemHtml(item) : this.itemHtml(item)).join("");
+        this.grid.innerHTML = items.map((item) => {
+            const meta = this.view === "ratings" ? (item.rating ? `${item.rating} / 10` : "未评分") : item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-CN") : "";
+            const card = comicCardHtml(item, { meta });
+            if (this.view !== "ratings") return card;
+            const tags = Object.entries(item.tag_feedback || {}).map(([tag, value]) => `<span class="tag" data-sentiment="${Number(value)}">${escapeHtml(tag)} · ${Number(value) > 0 ? "喜欢" : Number(value) === -2 ? "屏蔽" : "回避"}</span>`).join("");
+            return card.replace("</article>", `${item.review ? `<p class="library-review">${escapeHtml(item.review)}</p>` : ""}<div class="tag-list">${tags}</div></article>`);
+        }).join("");
+        hydrateCovers(this.grid);
     }
-
-    itemHtml(item) {
-        const author = Array.isArray(item.author) ? item.author.join(" & ") : item.author;
-        const tagFeedback = item.tag_feedback && typeof item.tag_feedback === "object"
-            ? Object.entries(item.tag_feedback)
-            : [];
-        const label = this.view === "history" && item.savedAt
-            ? new Date(item.savedAt).toLocaleDateString("zh-CN")
-            : (this.view === "ratings"
-                ? (item.rating
-                    ? `${item.rating} / 10`
-                    : (item.review
-                        ? "有评语"
-                        : `${tagFeedback.length} 项标签反馈`))
-                : "账号收藏");
-        const review = this.view === "ratings" && item.review ? `<p class="local-review-copy">${escapeHtml(item.review)}</p>` : "";
-        const feedback = this.view === "ratings" && tagFeedback.length
-            ? `<div class="library-tag-feedback">${tagFeedback.slice(0, 8).map(([tag, sentiment]) => `<span data-sentiment="${Number(sentiment)}">${escapeHtml(tag)} · ${Number(sentiment) > 0 ? "喜欢" : (Number(sentiment) === -2 ? "屏蔽" : "回避")}</span>`).join("")}</div>`
-            : "";
-        const detailUrl = `./chapter.html?id=${encodeURIComponent(item.id)}&v=20260827-7`;
-        return `<article class="random-history-item">
-            <a class="random-history-cover" href="${detailUrl}"><img loading="lazy" src="${escapeHtml(item.cover_url || jmApi.getCoverImageURL(item.id))}" alt="${escapeHtml(item.name || item.title)}" /></a>
-            <div class="random-history-copy"><small>${escapeHtml(label)}</small><h2><a href="${detailUrl}">${escapeHtml(item.name || item.title)}</a></h2><p>${escapeHtml(author || (item.authors || []).join(" & ") || "未知作者")}</p>${review}${feedback}</div>
-        </article>`;
-    }
-
-    randomHistoryItemHtml(item) {
-        const authors = Array.isArray(item.author) ? item.author : (Array.isArray(item.authors) ? item.authors : [item.author || item.authors].filter(Boolean));
-        return `<article class="random-history-item" data-random-history-id="${escapeHtml(item.id)}">
-            <a class="random-history-cover" href="./chapter.html?id=${encodeURIComponent(item.id)}&v=20260827-7"><img loading="lazy" src="${escapeHtml(item.cover_url || jmApi.getCoverImageURL(item.id))}" alt="${escapeHtml(item.name || item.title)}" /></a>
-            <div class="random-history-copy"><small>RANDOM · ${escapeHtml(new Date(item.savedAt).toLocaleString("zh-CN"))}</small><h2><a href="./chapter.html?id=${encodeURIComponent(item.id)}&v=20260827-7">${escapeHtml(item.name || item.title)}</a></h2><p>${escapeHtml(authors.join(" & ") || "未知作者")}</p></div>
-        </article>`;
-    }
-
 }
-
-new LibraryPage().init().catch((error) => renderPageError(".library-grid", error, { title: "资料库加载失败" }));
+new LibraryPage().init().catch((error) => renderPageError(".library-grid", error, { title: "书架加载失败" }));
