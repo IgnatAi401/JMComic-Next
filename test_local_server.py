@@ -494,3 +494,21 @@ class CacheWriteCounterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LibraryHistoryRouteTests(unittest.TestCase):
+    def test_history_api_import_read_clear_and_invalid_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalFeatureStore(Path(directory))
+            with patch.object(local_server, "local_features", store):
+                handler = _handler_with_body({"items": [{"id": "123", "savedAt": 10}], "legacy": True})
+                handler.path = "/local-api/library/history?kind=reading"
+                handler.do_POST()
+                self.assertEqual(handler.send_json.call_args.args[0]["items"][0]["id"], "123")
+                handler.do_GET()
+                self.assertEqual(len(handler.send_json.call_args.args[0]["items"]), 1)
+                handler.do_DELETE()
+                self.assertEqual(handler.send_json.call_args.args[0]["items"], [])
+                handler.path = "/local-api/library/history?kind=invalid"
+                handler.do_GET()
+                self.assertEqual(handler.send_json.call_args.kwargs["status"], HTTPStatus.BAD_REQUEST)

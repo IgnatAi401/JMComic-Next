@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#030303"><link rel="stylesheet" href="./style/jmcomic-next.css"><title>历史记录迁移</title>
+<body><h1>历史记录迁移</h1><p>将当前浏览器、当前网址下的最近阅读与随机历史合并到本项目数据库。不会调用账号或 AI 接口。</p>
+<button id="migrate">导入旧记录并读取数据库</button><p id="status" role="status">等待导入。</p>
+<script type="module">
+import { libraryStore } from "./src/data/LibraryStore.js";
+const button = document.querySelector("#migrate");
+button.addEventListener("click", async () => {
+    button.disabled = true;
+    const status = document.querySelector("#status");
+    try {
+        const count = (key) => { try { return JSON.parse(localStorage.getItem(key) || "[]").length; } catch { return 0; } };
+        const reading = count("jm_reading_history_v2"), random = count("jm_random_history_v1");
+        await libraryStore.init();
+        status.textContent = `导入完成。本浏览器旧记录：最近阅读 ${reading} 条，随机历史 ${random} 条。数据库现有：最近阅读 ${libraryStore.getHistory().length} 条，随机历史 ${libraryStore.getRandomHistory().length} 条。`;
+    } catch (error) { status.textContent = `导入未完成：${error.message}。未成功导入的旧记录仍保留，请重试。`; }
+    finally { button.disabled = false; }
+});
+</script></body></html>

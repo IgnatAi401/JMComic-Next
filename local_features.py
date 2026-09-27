@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -201,6 +202,45 @@ class LocalFeatureStore:
         self.embedding_providers: dict[str, EmbeddingProvider] = {}
         self.ensure_files()
 
+    def library_history(self, kind, items=None, *, legacy=False, clear=False):
+        if kind not in {"reading", "random"}:
+            raise LocalFeatureError("历史类型无效")
+        normalized = []
+        if items is not None:
+            if not isinstance(items, list) or len(items) > 1000:
+                raise LocalFeatureError("历史记录必须为列表且不超过 1000 条")
+            for item in items:
+                if not isinstance(item, dict) or not re.fullmatch(r"\d{1,16}", str(item.get("id", ""))):
+                    raise LocalFeatureError("历史记录编号无效")
+                timestamp = item.get("savedAt", 0)
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or not 0 <= timestamp <= 8640000000000000:
+                    raise LocalFeatureError("历史记录时间无效")
+                value = dict(item, id=str(item["id"]), savedAt=int(timestamp))
+                payload = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+                if len(payload.encode("utf-8")) > 64000:
+                    raise LocalFeatureError("单条历史记录过大")
+                normalized.append((value, payload))
+        with self.lock, self._managed_connection() as connection:
+            if clear:
+                connection.execute("DELETE FROM library_history WHERE kind=?", (kind,))
+            for value, payload in normalized:
+                if legacy:
+                    fingerprint = hashlib.sha256((kind + payload).encode("utf-8")).hexdigest()
+                    cursor = connection.execute("INSERT OR IGNORE INTO library_history_imports VALUES (?)", (fingerprint,))
+                    if not cursor.rowcount:
+                        continue
+                connection.execute(
+                    "INSERT INTO library_history VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(kind, comic_id) DO UPDATE SET saved_at=excluded.saved_at, payload=excluded.payload "
+                    "WHERE excluded.saved_at >= library_history.saved_at",
+                    (kind, value["id"], value["savedAt"], payload),
+                )
+            rows = connection.execute(
+                "SELECT payload FROM library_history WHERE kind=? ORDER BY saved_at DESC, comic_id DESC",
+                (kind,),
+            ).fetchall()
+        return {"items": [json.loads(row["payload"]) for row in rows]}
+
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=15)
         connection.row_factory = sqlite3.Row
@@ -221,6 +261,14 @@ class LocalFeatureStore:
         with self.lock, self._managed_connection() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS library_history (
+                    kind TEXT NOT NULL, comic_id TEXT NOT NULL,
+                    saved_at INTEGER NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY (kind, comic_id)
+                );
+                CREATE TABLE IF NOT EXISTS library_history_imports (
+                    fingerprint TEXT PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS comics (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL DEFAULT '',
