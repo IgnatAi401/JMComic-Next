@@ -38,6 +38,7 @@ export class BannerManager {
 
     async init() {
         if (!this.detailsDom || !this.showcaseDom || !this.triggerDom) return;
+        await libraryStore.init();
         this.history = libraryStore.getRandomHistory();
         this.triggerDom.addEventListener("click", () => this.loadRandomComic());
         this.previousDom?.addEventListener("click", () => this.#showHistoryAt(this.currentIndex + 1, "older"));
@@ -57,7 +58,7 @@ export class BannerManager {
         this.#setLoading(true);
         try {
             const selection = await this.#findValidRandomAlbum();
-            this.#renderAlbum(selection.album, selection.id, selection.attempts, selection.fallback, {
+            await this.#renderAlbum(selection.album, selection.id, selection.attempts, selection.fallback, {
                 record: true,
                 direction: "newer",
             });
@@ -129,7 +130,7 @@ export class BannerManager {
         this.detailsDom.querySelector("[data-random-status]").textContent = `第 ${batch} 批并行验证中`;
     }
 
-    #renderAlbum(album, id, attempts, fallback, { record = false, direction = "newer", status = "" } = {}) {
+    async #renderAlbum(album, id, attempts, fallback, { record = false, direction = "newer", status = "" } = {}) {
         const title = asText(album.name, `漫画 #${id}`);
         const authors = asTextList(album.author || album.authors);
         const tags = asTextList(album.tags).slice(0, 7);
@@ -143,7 +144,7 @@ export class BannerManager {
         if (this.currentId && this.currentId !== id) this.#animateTransition(direction);
         this.currentId = id;
         if (record) {
-            libraryStore.recordRandomHistory({
+            await libraryStore.recordRandomHistory({
                 ...album,
                 id,
                 name: title,

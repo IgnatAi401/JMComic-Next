@@ -946,6 +946,13 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/local-api/library/history":
+            kind = parse_qs(parsed.query).get("kind", [""])[0]
+            try:
+                self.send_json(local_features.library_history(kind))
+            except (LocalFeatureError, ValueError) as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/local-api/image":
             query = parse_qs(parsed.query)
             servers = str(query.get("servers", [""])[0]).split(",")
@@ -1078,6 +1085,16 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/local-api/library/history":
+            kind = parse_qs(parsed.query).get("kind", [""])[0]
+            body = self.read_json_body()
+            if body is None:
+                return
+            try:
+                self.send_json(local_features.library_history(kind, body.get("items", []), legacy=body.get("legacy") is True))
+            except (LocalFeatureError, ValueError) as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/local-api/jm-proxy":
             body = self.read_json_body()
             if body is not None:
@@ -1361,6 +1378,13 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/local-api/library/history":
+            kind = parse_qs(parsed.query).get("kind", [""])[0]
+            try:
+                self.send_json(local_features.library_history(kind, clear=True))
+            except (LocalFeatureError, ValueError) as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/local-api/account":
             atomic_json_write(ACCOUNT_FILE, {"username": "", "password": ""}, private=True)
             clear_cache_kind("favorites")

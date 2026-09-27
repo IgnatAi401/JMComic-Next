@@ -1,8 +1,8 @@
-import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
+import { localRuntime } from "../local/LocalRuntime.js";
+import { readLocalStorage, removeLocalStorage } from "../utils/BrowserStorage.js";
 
 const HISTORY_KEY = "jm_reading_history_v2";
 const RANDOM_HISTORY_KEY = "jm_random_history_v1";
-const RANDOM_HISTORY_LIMIT = 200;
 
 function readList(key) {
     try {
@@ -45,37 +45,51 @@ function normalizeRandomAlbum(album) {
 }
 
 class LibraryStore {
-    getHistory() { return readList(HISTORY_KEY); }
+    lists = { reading: [], random: [] };
+    pending = null;
+    queue = Promise.resolve();
 
-    recordHistory(album) {
-        const item = normalizeAlbum(album);
-        const list = this.getHistory().filter((entry) => entry.id !== item.id);
-        list.unshift(item);
-        writeLocalStorage(HISTORY_KEY, JSON.stringify(list.slice(0, 100)));
+    init() {
+        if (this.pending) return this.pending;
+        this.pending = this.#load().catch((error) => {
+            this.pending = null;
+            throw error;
+        });
+        return this.pending;
+    }
+
+    async #load() {
+        for (const [kind, key] of [["reading", HISTORY_KEY], ["random", RANDOM_HISTORY_KEY]]) {
+            const original = readLocalStorage(key);
+            const items = readList(key);
+            const result = await localRuntime.request(`./local-api/library/history?kind=${kind}`, items.length
+                ? { method: "POST", body: { items, legacy: true } } : {});
+            this.lists[kind] = result.items;
+            // Keep legacy data on failure or if another tab changed it during import.
+            if (items.length && readLocalStorage(key) === original) removeLocalStorage(key);
+        }
         this.#notify();
     }
 
-    clearHistory() {
-        removeLocalStorage(HISTORY_KEY);
-        this.#notify();
+    getHistory() { return this.lists.reading; }
+    getRandomHistory() { return this.lists.random; }
+
+    #mutate(kind, items, clear = false) {
+        const operation = this.queue.then(async () => {
+            await this.init();
+            const result = await localRuntime.request(`./local-api/library/history?kind=${kind}`, clear
+                ? { method: "DELETE" } : { method: "POST", body: { items } });
+            this.lists[kind] = result.items;
+            this.#notify();
+        });
+        this.queue = operation.catch(() => {});
+        return operation;
     }
 
-    getRandomHistory() { return readList(RANDOM_HISTORY_KEY); }
-
-    recordRandomHistory(album) {
-        const item = normalizeRandomAlbum(album);
-        const list = this.getRandomHistory().filter((entry) => String(entry.id) !== item.id);
-        list.unshift(item);
-        writeLocalStorage(RANDOM_HISTORY_KEY, JSON.stringify(list.slice(0, RANDOM_HISTORY_LIMIT)));
-        this.#notify();
-        return item;
-    }
-
-    clearRandomHistory() {
-        removeLocalStorage(RANDOM_HISTORY_KEY);
-        this.#notify();
-    }
-
+    recordHistory(album) { return this.#mutate("reading", [normalizeAlbum(album)]); }
+    recordRandomHistory(album) { return this.#mutate("random", [normalizeRandomAlbum(album)]); }
+    clearHistory() { return this.#mutate("reading", [], true); }
+    clearRandomHistory() { return this.#mutate("random", [], true); }
     #notify() { window.dispatchEvent(new CustomEvent("jm-library-change")); }
 }
 

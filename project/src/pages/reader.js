@@ -1,3 +1,4 @@
+import { showToast } from "../components/general/Toast.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { CleanCommentManager } from "../components/chapter/CleanCommentManager.js";
 import { LocalRatingManager } from "../components/chapter/LocalRatingManager.js";
@@ -84,7 +85,7 @@ class ReaderPage {
                     this.recordReadProgress(pendingProgress);
                 }
             });
-            libraryStore.recordHistory(album);
+            await libraryStore.recordHistory(album).catch((error) => showToast(`阅读历史保存失败：${error.message}`));
             writeLocalStorage(`jm_last_chapter_${album.id}`, String(this.chapterId));
 
             document.querySelector(".reader-end").hidden = false;

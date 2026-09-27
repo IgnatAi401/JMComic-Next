@@ -37,6 +37,7 @@ class LibraryPage {
         const requestedView = new URLSearchParams(window.location.search).get("view");
         this.selectView(["favorites", "ratings", "history", "random"].includes(requestedView) ? requestedView : "favorites");
         try {
+            await libraryStore.init();
             await authSession.loadLocalConfig();
             this.render();
             if (authSession.isConfigured && this.view === "favorites") this.syncRemote();
@@ -72,11 +73,20 @@ class LibraryPage {
             }
             this.syncRemote();
         });
-        document.querySelector(".clear-history").addEventListener("click", () => {
-            if (this.view === "random") libraryStore.clearRandomHistory();
-            else libraryStore.clearHistory();
-            this.render();
-            showToast(this.view === "random" ? "随机历史已清空" : "阅读历史已清空");
+        document.querySelector(".clear-history").addEventListener("click", async (event) => {
+            const button = event.currentTarget;
+            const random = this.view === "random";
+            button.disabled = true;
+            try {
+                if (random) await libraryStore.clearRandomHistory();
+                else await libraryStore.clearHistory();
+                this.render();
+                showToast(random ? "随机历史已清空" : "阅读历史已清空");
+            } catch (error) {
+                showToast(error.message || "历史清空失败，请重试");
+            } finally {
+                button.disabled = false;
+            }
         });
         this.loadMoreButton.addEventListener("click", () => this.loadRemotePage(this.page + 1, true));
         this.grid.addEventListener("click", (event) => {
@@ -273,6 +283,9 @@ class LibraryPage {
         const items = this.view === "random"
             ? libraryStore.getRandomHistory()
             : (this.view === "history" ? libraryStore.getHistory() : (this.view === "ratings" ? this.filteredRatings() : this.remoteItems));
+        if (this.view === "random" || this.view === "history") {
+            document.querySelector(".sync-state").textContent = `${this.view === "random" ? "随机发现" : "最近阅读"} · ${items.length}`;
+        }
         this.grid.classList.add("random-history-grid");
         if (this.view === "ratings") {
             document.querySelector(".sync-state").textContent = `本地评价 · ${items.length} 本`;
