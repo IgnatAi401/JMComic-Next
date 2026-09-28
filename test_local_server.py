@@ -378,3 +378,23 @@ class RecommendationJobRouteTests(unittest.TestCase):
             handler.path = path
             self.assertIsNone(handler.send_head())
             handler.send_error.assert_called_with(HTTPStatus.NOT_FOUND)
+
+
+class AnalysisSourceTests(unittest.TestCase):
+    def test_fetches_album_and_two_pages(self):
+        responses = [{"id": 123, "description": "虚构简介"},
+                     {"list": [{"content": "第一条评论"}], "total": "3"},
+                     {"list": [{"content": "第二条评论"}], "total": "3"}]
+        with tempfile.TemporaryDirectory() as directory, patch.object(local_server, "CACHE_DIR", Path(directory)):
+            target = Path(directory) / "bootstrap" / "servers.json"
+            target.parent.mkdir()
+            target.write_text('{"data":["example.invalid"]}')
+            with patch.object(local_server, "normalize_proxy_servers", return_value=["example.invalid"]), patch.object(
+                local_server, "urlopen", side_effect=[_ProxyResponse(json.dumps({"data": v}).encode()) for v in responses]
+            ) as remote:
+                value = local_server.fetch_analysis_source("123")
+            self.assertEqual(remote.call_count, 3)
+            self.assertIn("/forum?", remote.call_args.args[0].full_url)
+            self.assertEqual(value["description"], "虚构简介")
+            self.assertEqual(len(value["comments"]), 2)
+            self.assertEqual(value["comments_status"], "ready")

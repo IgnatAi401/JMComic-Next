@@ -33,7 +33,8 @@ class ContentAnalysisTests(unittest.TestCase):
         self.runtime.queue.join()
         result = self.runtime.get("1")
         self.assertTrue(result["current"])
-        self.assertIn(self.store.ai_content.return_value, result["text"])
+        self.assertNotIn(self.store.ai_content.return_value, result["text"])
+        self.assertIn("记忆交换影响人物关系", result["text"])
         self.assertIn("1", self.runtime.content.features())
         self.assertEqual(self.runtime.content.features()["1"]["assertions"]["development"]["value"], 0.8)
         payload = json.loads(self.store.ai_content.call_args.args[0][-1]["content"])
@@ -60,7 +61,8 @@ class ContentAnalysisTests(unittest.TestCase):
         self.runtime.update_missing()
         self.runtime.queue.join()
         self.assertEqual(self.store.ai_content.call_count, 4)
-        self.assertEqual(len(self.runtime.overview()["items"]), 2)
+        self.assertEqual(len(self.runtime.overview()["items"]), 0)
+        self.assertEqual(self.runtime.overview()["counts"]["ready"], 2)
 
     def test_failure_preserves_rating_review_and_is_retriable(self):
         self.save(review="保留评语")
@@ -190,3 +192,32 @@ class ContentAnalysisTests(unittest.TestCase):
         self.assertTrue(comic["favorite"])
         with reopened._managed_connection() as db:
             self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='rating_semantics'").fetchone())
+
+    def test_source_loader_supplies_description_and_comments_before_llm(self):
+        self.save()
+        self.runtime.source_loader = Mock(return_value={"description": "虚构简介内容", "description_fetched": True,
+            "comments": [{"content": "读者对展开的描述"}], "comments_status": "ready", "comments_total": 1})
+        self.runtime.enqueue("1")
+        self.runtime.queue.join()
+        payload = json.loads(self.store.ai_content.call_args.args[0][-1]["content"])
+        self.assertEqual(payload["description"], "虚构简介内容")
+        self.assertEqual(payload["comment:0"], "读者对展开的描述")
+        self.assertTrue(self.runtime.get("1")["current"])
+
+    def test_source_failure_does_not_spend_llm_call(self):
+        self.save()
+        self.runtime.source_loader = Mock(side_effect=ValueError("fetch failed"))
+        self.runtime.enqueue("1")
+        self.runtime.queue.join()
+        self.assertEqual(self.runtime.get("1")["status"], "error")
+        self.store.ai_content.assert_not_called()
+
+    def test_old_empty_materials_can_be_completed(self):
+        self.save()
+        self.runtime.content.prepare({"id": "1", "title": "测试作品"})
+        self.runtime.source_loader = Mock(return_value={"description": "", "description_fetched": True,
+            "comments": [], "comments_status": "ready", "comments_total": 0})
+        self.assertFalse(self.runtime.get("1")["current"])
+        self.runtime.update_missing()
+        self.runtime.queue.join()
+        self.assertTrue(self.runtime.get("1")["current"])

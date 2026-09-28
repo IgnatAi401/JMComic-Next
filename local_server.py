@@ -37,7 +37,7 @@ CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
 ACCOUNT_FILE = DATA_DIR / "account.json"
 local_features = LocalFeatureStore(DATA_DIR)
 embedding_runtime = QwenEmbeddingRuntime(local_features)
-content_analysis = ContentAnalysis(local_features)
+content_analysis = ContentAnalysis(local_features, source_loader=lambda comic_id: fetch_analysis_source(comic_id))
 recommendation_jobs = RecommendationJobs(local_features)
 
 CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications"}
@@ -213,6 +213,52 @@ def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
             continue
     raise JmSessionError("登录接口数据解密失败")
+
+
+def fetch_analysis_source(comic_id):
+    """Fetch public metadata and at most two comment pages before spending LLM budget."""
+    if not re.fullmatch(r"\d+", str(comic_id)):
+        raise ValueError("作品编号无效")
+    wrapper = json.loads((CACHE_DIR / "bootstrap" / "servers.json").read_text(encoding="utf-8"))
+    servers = normalize_proxy_servers(wrapper.get("data"))
+
+    def request(path):
+        for server in servers:
+            try:
+                timestamp = int(time.time())
+                headers = {"token": hashlib.md5(f"{timestamp}{JM_TOKEN_SECRET}".encode()).hexdigest(),
+                           "tokenParam": f"{timestamp},{JM_APP_VERSION}", "User-Agent": "JMComic-WebUI-Local/1.0"}
+                with urlopen(Request(f"https://{server}{path}", headers=headers), timeout=20) as response:
+                    raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_PROXY_RESPONSE_BYTES:
+                    raise ValueError("响应过大")
+                envelope = json.loads(raw)
+                if envelope.get("code", 200) not in (200, "200"):
+                    raise ValueError("资料接口失败")
+                data = envelope.get("data", envelope)
+                data = decrypt_jm_data(data, timestamp) if isinstance(data, str) else data
+                if not isinstance(data, dict):
+                    raise ValueError("资料格式无效")
+                return data
+            except (OSError, ValueError, JmSessionError):
+                continue
+        raise ValueError("作品资料获取失败，请重试")
+
+    album = request(f"/album?id={comic_id}")
+    if str(album.get("id")) != str(comic_id):
+        raise ValueError("作品资料不匹配")
+    comments, total = [], None
+    for page in range(1, 3):
+        data = request(f"/forum?{urlencode({'page': page, 'mode': 'all', 'aid': comic_id})}")
+        if not isinstance(data.get("list"), list):
+            raise ValueError("评论格式无效")
+        total = max(0, int(data["total"])) if data.get("total") is not None else None
+        comments.extend(data["list"][:60 - len(comments)])
+        if not data["list"] or len(comments) >= 60 or (total is not None and len(comments) >= total):
+            break
+    return {"description": album.get("description") or album.get("intro") or "",
+            "description_fetched": True, "comments": comments,
+            "comments_total": total, "comments_status": "ready"}
 
 
 def request_jm_login(username: str, password: str, servers: list[str]) -> tuple[str, str, dict]:
