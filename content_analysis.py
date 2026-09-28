@@ -11,8 +11,9 @@ VERSION = "content-analysis-v2"
 
 
 class ContentAnalysis:
-    def __init__(self, store):
+    def __init__(self, store, source_loader=None):
         self.store = store
+        self.source_loader = source_loader
         self.lock = threading.RLock()
         self.pending = set()
         self.queue = queue.Queue()
@@ -42,6 +43,8 @@ class ContentAnalysis:
         digest, _, config = self.snapshot(comic)
         entry = self.content.cached(comic_id).get(str(comic_id)) if config.get("configured") else None
         current = bool(entry and self.content.current(entry, comic) and entry["status"] == "ready")
+        if current and self.source_loader:
+            current = bool(entry["source"].get("description_fetched") and entry["source"]["comments_status"] == "ready")
         with self.lock:
             active = (str(comic_id), digest) in self.pending
             state = self.states.get((str(comic_id), digest), "queued")
@@ -66,11 +69,11 @@ class ContentAnalysis:
                 lines.append(f'{DIMENSIONS[name]}：{assertion["value"]}（{origin}）\n依据：{assertion["quote"]}')
             if not entry["assertions"]:
                 lines.append("暂无通过原文核验的特征。")
-            lines.extend(["", "LLM 完整返回（只有上面通过核验的特征参与排序）：", entry["text"]])
+
             text = "\n".join(lines)
         return {"status": status, "text": text, "current": current,
                 "updated_at": entry["updated_at"] if entry else None,
-                "error": "内容分析未完成，请在设置中重试；评分和评语已保留。" if status == "error" else ""}
+                "error": "作品资料获取或内容分析失败，请在设置中重试；评分和评语已保留。" if status == "error" else ""}
 
     def enqueue(self, comic_id):
         comic = self.store.get_comic(comic_id)
@@ -111,7 +114,8 @@ class ContentAnalysis:
             if state["status"] == "unrated":
                 continue
             counts["ready" if state["current"] and state["status"] not in {"running", "queued"} else state["status"]] += 1
-            items.append({"id": comic["id"], "title": comic["title"], "rating": comic["rating"], **state})
+            if state["status"] != "ready":
+                items.append({"id": comic["id"], "title": comic["title"], "rating": comic["rating"], **state})
         return {"counts": counts, "items": items, "configured": bool(self.config().get("configured"))}
 
     def _run(self):
@@ -146,6 +150,8 @@ class ContentAnalysis:
                 value.update(description=value["description"] or source["description"],
                              comments=[{"id": c["id"], "content": c["text"]} for c in source["comments"]],
                              comments_status=source["comments_status"], comments_total=source["platform_total"])
+            if self.source_loader:
+                value.update(self.source_loader(comic_id))
             result = self.content.prepare(value, guard=valid)
             if result["status"] not in {"ready", "cached", "stale"}:
                 raise ValueError("analysis failed")

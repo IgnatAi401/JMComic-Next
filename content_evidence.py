@@ -34,6 +34,7 @@ def normalize_source(value):
     total = value.get("comments_total")
     return {"title": plain(value.get("title"), 500),
             "description": plain(value.get("description"), 2500),
+            "description_fetched": value.get("description_fetched") is True,
             "comments": comments, "comments_status": status,
             "platform_total": max(0, int(total)) if isinstance(total, (int, float)) else None,
             "fetched_count": len(comments)}

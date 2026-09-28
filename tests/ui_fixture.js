@@ -49,9 +49,9 @@ const recommendations = comics.slice(0, 4).map((item, index) => ({ ...item, titl
 const run = { id: 1, status: "success", created_at: stamp, recommendations };
 const user = { uid: "1", username: "本地测试", level_name: "体验用户" };
 const account = { configured: true, authenticated: true, username: user.username, user };
-const semanticText = '内容概括：旅人沿海岸与山间记录自然观察。\n参与推荐的内容特征：\n具体设定：0.8（读者评论）\n依据：自然观察的独特设定\nLLM 完整返回：\n{"summary":"旅人的自然观察","assertions":{"mechanism":{"value":0.8,"source":"comment:0","quote":"自然观察的独特设定"}}}';
+const semanticText = '内容概括：旅人沿海岸与山间记录自然观察。\n参与推荐的内容特征：\n具体设定：0.8（读者评论）\n依据：自然观察的独特设定';
 const semanticState = comic => ({ status: comic?.rating != null ? "ready" : "unrated", current: comic?.rating != null, text: comic?.rating != null ? semanticText : "" });
-const semanticOverview = () => { const items = [...memory.values()].filter(c => c.rating != null).map(c => ({ id: c.id, title: c.title, rating: c.rating, ...semanticState(c) })); return { configured: true, counts: {ready:items.length,queued:0,running:0,error:0,missing:0,stale:0,unconfigured:0}, items }; };
+const semanticOverview = () => { const items = [...memory.values()].filter(c => c.rating != null).map(c => ({ id: c.id, title: c.title, rating: c.rating, ...semanticState(c) })); return { configured: true, counts: {ready:items.length,queued:0,running:0,error:0,missing:0,stale:0,unconfigured:0}, items: [] }; };
 const memory = new Map(comics.slice(0, 3).map((item, i) => [item.id, { ...item, title: item.name, authors: item.author, rating: 8 - i, review: "虚构的本地阅读评价", tag_feedback: { "旅行": 1 } }]));
 
 // Default stubs keep newly added calls local; named fakes below supply useful shapes.
@@ -207,7 +207,7 @@ async function runChecks(shellOnly = false) {
             const review = document.querySelector('.rating-editor textarea'); review.value = '虚构测试评语';
             click('[data-save-rating]'); await sleep(100);
             check("评价可保存并读回", (await localRuntime.getLocalComic('100100')).comic.rating === 9);
-            check("评分后的完整内容分析可见", document.querySelector("[data-summary-text]").textContent.includes("LLM 完整返回"));
+            check("评分后的内容分析可读且无原始JSON", document.querySelector("[data-summary-text]").textContent.includes("内容概括") && !document.querySelector("[data-summary-text]").textContent.includes("assertions"));
             click('[data-feedback-reason="cover"] [data-interest="interested"]'); await sleep(80);
             click('[data-feedback-reason="title"] [data-interest="not_interested"]'); await sleep(80);
             let saved = (await localRuntime.getLocalComic('100100')).comic;
@@ -264,7 +264,7 @@ async function runChecks(shellOnly = false) {
             check("随机与书架完整", !!document.querySelector('[data-random-open]').href && document.querySelectorAll('.shelf').length === 2);
             const id = document.querySelector('[data-random-id]').textContent; click('[data-random-prev]'); await sleep(80); check("随机历史可翻页", document.querySelector('[data-random-id]').textContent !== id);
         } else if (page === "latest") check("最新列表去重", document.querySelectorAll('[data-results] .comic-card').length === 12);
-        else if (page === "setting") { click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true'); click("[data-update-content-analysis]"); await sleep(80); check("批量内容分析结果可读", document.querySelector("[data-analysis-list]").textContent.includes("LLM 完整返回")); }
+        else if (page === "setting") { click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true'); click("[data-update-content-analysis]"); await sleep(80); check("设置不展示已完成项目", !document.querySelector("[data-analysis-list] details") && document.querySelector("[data-analysis-list]").textContent.includes("没有待处理")); }
         else if (page === "history-migration") check("历史迁移完成", document.querySelector('[data-migration-status]').textContent.includes('已合并'));
         check("操作后页面不横向溢出", document.documentElement.scrollWidth <= innerWidth + 1);
         check("无脚本异常或意外请求", !fixture.errors.length && !fixture.blockedRequests.length, JSON.stringify(fixture.errors));
