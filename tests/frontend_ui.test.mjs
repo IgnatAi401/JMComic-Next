@@ -3,6 +3,42 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const { prepareContent } = await import('data:text/javascript;base64,' + Buffer.from(
+    await readFile(new URL('../project/src/local/ContentPreparation.js', import.meta.url), 'utf8')
+).toString('base64'));
+
+test('content preparation balances training/candidates, deduplicates and respects budget', async () => {
+    const prepared = [], requests = [];
+    const result = await prepareContent({
+        runtime: {
+            planContent: async () => ({ configured: true,
+                training: [{ id: '1' }, { id: '2' }], candidates: [{ id: '1' }, { id: '3' }] }),
+            prepareContent: async item => { prepared.push(item); return { status: 'ready' }; },
+        },
+        api: { getComicComments: async (id, page) => { requests.push([id, page]); return { total: 100, list: [{ content: 'test' }] }; } },
+        candidates: [], budget: 2, stopped: () => false, progress() {},
+    });
+    assert.equal(prepared.length, 2);
+    assert.equal(new Set(prepared.map(r => r.id)).size, 2);
+    assert.equal(requests.length, 4);
+    assert.equal(result.remaining, 1);
+});
+
+test('content failure is recorded without discarding candidates; stop launches no further calls', async () => {
+    let stopped = false, calls = 0;
+    const plan = { configured: true, training: [], candidates: [{ id: '1' }, { id: '2' }] };
+    const runtime = { planContent: async () => plan, prepareContent: async item => {
+        assert.equal(item.comments_status, 'error'); calls++; return { status: 'error' };
+    } };
+    const api = { getComicComments: async () => { throw Error('network'); } };
+    const result = await prepareContent({ runtime, api, candidates: [], budget: 1, stopped: () => stopped, progress() {} });
+    assert.equal(calls, 1);
+    assert.equal(result.failed, 1);
+    stopped = true;
+    await prepareContent({ runtime, api, candidates: [], budget: 2, stopped: () => stopped, progress() {} });
+    assert.equal(calls, 1);
+});
+
 class Element {
     style = {};
     dataset = {};
@@ -280,6 +316,31 @@ test('a failed rating save preserves the score, review and tag draft for retry',
     await editor.save();
     assert.equal(editor.score,9);assert.equal(editor.tagFeedback.travel,1);assert.equal(root.querySelector('textarea').value,'my review');assert.equal(editor.saving,false);
     assert.match(root.querySelector('[data-rating-status]').textContent,/offline/);
+});
+
+test('rating summary displays complete model text safely and labels stale output', async () => {
+    const {exports} = await environment('ui/rating.js');
+    const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
+    editor.watchSemantics({status:'ready', current:true, text:'评价总结\n<img src=x onerror=alert(1)>\n完整返回'});
+    assert.equal(root.querySelector('[data-summary-text]').textContent, '评价总结\n<img src=x onerror=alert(1)>\n完整返回');
+    assert.equal(root.querySelector('[data-summary-text]').innerHTML, '');
+    editor.watchSemantics({status:'stale', current:false, text:'旧总结'});
+    assert.match(root.querySelector('[data-summary-text]').textContent, /上次总结/);
+    editor.watchSemantics({status:'unrated', current:false, text:''});
+    assert.equal(root.querySelector('[data-summary-text]').textContent, '');
+});
+
+test('a late summary poll cannot replace a newer saved review result', async () => {
+    const {exports, localRuntime, runTimers} = await environment('ui/rating.js');
+    const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
+    const old = deferred();
+    localRuntime.getRatingSemantics = () => old.promise;
+    editor.watchSemantics({status:'running', current:false, text:''});
+    runTimers(1500);
+    editor.watchSemantics({status:'ready', current:true, text:'新评语的总结'});
+    old.resolve({status:'ready', current:true, text:'旧评语的总结'});
+    await old.promise;
+    assert.equal(root.querySelector('[data-summary-text]').textContent, '新评语的总结');
 });
 
 test('seeking clamps page numbers and realigns after earlier images change height', async () => {

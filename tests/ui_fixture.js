@@ -45,10 +45,13 @@ const profile = {
     preferred_tags: ["旅行", "自然", "日常"], preferred_authors: ["示例作者"],
     structured_stats: { evidence_count: 24, rated_count: 12, interaction_count: 48 },
 };
-const recommendations = comics.slice(0, 4).map((item, index) => ({ ...item, title: item.name, authors: item.author, score: 8.8 - index * .4, reason: "自然题材与日常观察符合示例偏好，叙事轻松，适合继续阅读。", score_breakdown: { tags: .8, author: .6, novelty: .4 } }));
-const run = { id: 1, status: "success", created_at: stamp, recommendations, raw_outputs: [{ stage: "fixture", output: "中性虚构模型输出，用于检查长文本和弹窗布局。" }] };
+const recommendations = comics.slice(0, 4).map((item, index) => ({ ...item, title: item.name, authors: item.author, score: 8.8 - index * .4, reason: "自然题材与日常观察符合示例偏好，叙事轻松，适合继续阅读。", evidence: [{ label: "具体设定", source: "comment:0", quote: "自然观察的独特设定" }], score_breakdown: [{ key: "preference", label: "喜欢门槛匹配", contribution: 65 }, { key: "novelty", label: "探索", contribution: 3 }] }));
+const run = { id: 1, status: "success", created_at: stamp, recommendations };
 const user = { uid: "1", username: "本地测试", level_name: "体验用户" };
 const account = { configured: true, authenticated: true, username: user.username, user };
+const semanticText = "评价总结\n你认可自然观察的独特设定。\n设定是否得到展开\n评语未提供足够细节，无法判断。";
+const semanticState = comic => ({ status: comic?.rating != null ? "ready" : "unrated", current: comic?.rating != null, text: comic?.rating != null ? semanticText : "" });
+const semanticOverview = () => { const items = [...memory.values()].filter(c => c.rating != null).map(c => ({ id: c.id, title: c.title, rating: c.rating, ...semanticState(c) })); return { configured: true, counts: {ready:items.length,queued:0,running:0,error:0,missing:0,stale:0,unconfigured:0}, items }; };
 const memory = new Map(comics.slice(0, 3).map((item, i) => [item.id, { ...item, title: item.name, authors: item.author, rating: 8 - i, review: "虚构的本地阅读评价", tag_feedback: { "旅行": 1 } }]));
 
 // Default stubs keep newly added calls local; named fakes below supply useful shapes.
@@ -76,7 +79,7 @@ Object.assign(jmApi, {
     getFavoriteIds: async () => new Set(), getFavoriteState: constant(false), getLikeState: constant(false),
     updateFavoriteState: async (_id, saved) => ({ saved }), toggleLike: constant({ liked: true }), setLikeState() {},
     getAlbumTrackingState: constant(false), toggleAlbumTracking: constant({ tracked: true }),
-    dailyCheckIn: constant({ message: "示例签到成功" }), getDailyCheckInStatus: constant({ checked: false }),
+    dailyCheckIn: constant({ status: "success", message: "示例签到成功" }), getDailyCheckInStatus: constant({ checked: false }),
     getUnreadNotificationCount: constant(2), markNotification: constant({ saved: true }),
     getNotifications: constant({ total: 3, list: [{ id: 1, title: "阅读记录已同步", content: "这是一条虚构通知，用于检查已读状态与长文本排版。", read: false, date: "2026-09-05" }, { id: 2, title: "示例连载更新", content: "旅途手记更新了一个新章节，可以从右侧追踪列表继续阅读。", read: false, date: "2026-09-04" }, { id: 3, title: "欢迎回来", content: "所有内容均来自本机测试数据。", read: true, date: "2026-09-03" }] }),
     getAlbumTrackingList: constant({ item: comics.slice(0, 4), totalCnt: 4 }),
@@ -88,13 +91,17 @@ Object.assign(localRuntime, {
     getEmbeddingStatus: constant({ available: true, model: "fixture-embedding", dimension: 1024 }),
     testAiConfig: constant({ success: true }), testEmbeddingConfig: constant({ success: true }),
     translateTitleWithAi: async (title) => ({ translated: title, translation: title, title }),
-    getLocalComic: async (id) => ({ comic: memory.get(String(id)) || null }),
-    saveLocalComic: async (value) => { const comic = { ...memory.get(String(value.id)), ...clone(value) }; memory.set(String(value.id), comic); return { comic: clone(comic), saved: true }; },
+    getLocalComic: async (id) => ({ comic: memory.get(String(id)) || null, rating_semantics: semanticState(memory.get(String(id))) }),
+    getRatingSemantics: async id => id ? semanticState(memory.get(String(id))) : semanticOverview(),
+    updateRatingSemantics: async () => semanticOverview(),
+    saveLocalComic: async (value) => { const comic = { ...memory.get(String(value.id)), ...clone(value) }; memory.set(String(value.id), comic); return { comic: clone(comic), saved: true, rating_semantics: semanticState(comic) }; },
     getLocalComics: async () => ({ comics: [...memory.values()] }), getComicFeedbackStates: constant({ states: {} }),
     syncLocalFavorites: constant({ synced: 6 }),
     getAiProfile: constant({ stats: { favorites: 6, rated: 12, tag_feedback: 18, interactions: 48 }, profile }), generateAiProfile: constant({ profile }),
     getRecommendedIds: constant({ ids: [] }), getDiscoveryExcludedIds: constant({ ids: [] }),
     getRecommendationHistory: constant({ runs: [run] }), generateRecommendations: constant(run),
+    planContent: async candidates => ({ configured: true, training: [], candidates }),
+    prepareContent: constant({ status: "ready" }),
     saveRecommendationFeedback: async ({comic_id, action, reason, comic}) => {
         const record = { ...comic, ...memory.get(String(comic_id)) };
         const states = { ...record.interest_feedback };
@@ -148,13 +155,14 @@ async function runChecks(shellOnly = false) {
         } else if (innerWidth < 700) {
             const toggle = document.querySelector("[data-toggle-menu]");
             const menu = document.querySelector(".mobile-navigation");
-            const main = document.querySelector("main");
-            const top = main.getBoundingClientRect().top;
             check("首页不再显示底部悬浮导航", !document.querySelector(".tab-bar"));
             click("[data-toggle-menu]");
-            check("展开菜单推开正文且导航完整", !menu.hidden && toggle.getAttribute("aria-expanded") === "true" && menu.querySelectorAll("a").length === 7 && main.getBoundingClientRect().top > top);
+            // Safari may suspend animation timelines in an automated/background window.
+            menu.closest(".sheet-panel").getAnimations().forEach((animation) => animation.finish());
+            const panel = menu.closest(".sheet-panel").getBoundingClientRect();
+            check("菜单覆盖全屏且导航完整", toggle.getAttribute("aria-expanded") === "true" && menu.querySelectorAll("a").length === 7 && Math.abs(panel.left) < 1 && Math.abs(panel.width - innerWidth) < 1 && panel.height >= innerHeight - 1 && document.body.style.position === "fixed", JSON.stringify({left: panel.left, width: panel.width, height: panel.height, viewport: [innerWidth, innerHeight], position: document.body.style.position}));
             menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-            check("Escape 收起菜单并恢复焦点", menu.hidden && toggle.getAttribute("aria-expanded") === "false" && document.activeElement === toggle);
+            check("Escape 收起菜单并恢复焦点", !menu.closest(".sheet").classList.contains("is-open") && toggle.getAttribute("aria-expanded") === "false" && document.activeElement === toggle);
             click(".mobile-header [data-open-search]"); await sleep(80);
             check("顶部搜索可打开", !!document.querySelector('[data-sheet="search"].is-open'));
             click('[data-sheet="search"] .sheet-close');
@@ -191,6 +199,7 @@ async function runChecks(shellOnly = false) {
             const review = document.querySelector('.rating-editor textarea'); review.value = '虚构测试评语';
             click('[data-save-rating]'); await sleep(100);
             check("评价可保存并读回", (await localRuntime.getLocalComic('100100')).comic.rating === 9);
+            check("评分后的完整语义总结可见", document.querySelector("[data-summary-text]").textContent.includes("无法判断"));
             click('[data-feedback-reason="cover"] [data-interest="interested"]'); await sleep(80);
             click('[data-feedback-reason="title"] [data-interest="not_interested"]'); await sleep(80);
             let saved = (await localRuntime.getLocalComic('100100')).comic;
@@ -230,8 +239,8 @@ async function runChecks(shellOnly = false) {
             const form = document.querySelector('.recommend-form'); form.elements.candidate_count.value = 3; form.elements.limit.value = 3;
             form.requestSubmit(); await sleep(250);
             check("推荐生成并显示评分依据", document.querySelectorAll('.ai-result-item').length > 0 && !!document.querySelector('.score-breakdown'));
-            click('[data-raw-run]'); await sleep(50); check("历史诊断可读", document.querySelector('[data-sheet="diagnostics"]').textContent.includes('中性虚构模型输出'));
-            click('[data-sheet="diagnostics"] .sheet-close');
+            check("内容证据可读", document.querySelector(".recommend-results").textContent.includes("自然观察的独特设定"));
+            click("[data-run]"); check("新格式历史可读", document.querySelectorAll(".ai-result-item").length > 0);
         } else if (page === "messages") {
             check("通知与追更分别显示", document.querySelectorAll('.notification-item').length === 3 && document.querySelectorAll('.tracking-item').length === 4);
             click('.notification-item.unread'); await sleep(50); check("标记已读生效", document.querySelectorAll('.notification-item.unread').length === 1);
@@ -247,7 +256,7 @@ async function runChecks(shellOnly = false) {
             check("随机与书架完整", !!document.querySelector('[data-random-open]').href && document.querySelectorAll('.shelf').length === 2);
             const id = document.querySelector('[data-random-id]').textContent; click('[data-random-prev]'); await sleep(80); check("随机历史可翻页", document.querySelector('[data-random-id]').textContent !== id);
         } else if (page === "latest") check("最新列表去重", document.querySelectorAll('[data-results] .comic-card').length === 12);
-        else if (page === "setting") { click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true'); }
+        else if (page === "setting") { click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true'); click("[data-update-rating-semantics]"); await sleep(80); check("批量语义评价结果可读", document.querySelector("[data-semantics-list]").textContent.includes("无法判断")); }
         else if (page === "history-migration") check("历史迁移完成", document.querySelector('[data-migration-status]').textContent.includes('已合并'));
         check("操作后页面不横向溢出", document.documentElement.scrollWidth <= innerWidth + 1);
         check("无脚本异常或意外请求", !fixture.errors.length && !fixture.blockedRequests.length, JSON.stringify(fixture.errors));

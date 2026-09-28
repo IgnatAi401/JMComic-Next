@@ -62,9 +62,10 @@ class ChapterPage {
             </div></header>
             <div class="detail-layout"><div class="detail-primary">
                 <section class="section"><div class="section-head"><h2 class="section-title">目录</h2><span class="section-meta">${this.chapters.length} 章</span></div><div class="chapter-list" data-navigation-scope="same-tab"></div></section>
+                <section class="section panel interest-feedback"></section>
                 <section class="section rating-editor"></section>
                 <section class="section detail-comments"></section>
-            </div><aside class="detail-secondary"><section class="panel interest-feedback"></section>
+            </div><aside class="detail-secondary">
                 <section class="section detail-info"><h2 class="section-title">作品资料</h2><dl>${[["发布", formatDate(album.addtime) || "未知"], ["评论", album.comment_total ?? 0], ["编号", album.id], ["类型", isApiTrue(album.is_aids) ? "章节合集" : this.chapters.length > 1 ? "系列" : "单篇"], ["价格", album.price || "免费"], ["购买状态", album.purchased || "无需购买"], ["原始链接", album.real_link || "无"]].map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl><h3>关联作品</h3><div class="tag-list">${links(album.works) || "暂无"}</div><h3>角色</h3><div class="tag-list">${links(album.actors) || "暂无"}</div></section>
             </aside></div>
             <section class="section related"><div class="section-head"><h2 class="section-title">相关作品</h2></div><div class="comic-grid">${(Array.isArray(album.related_list) ? album.related_list : []).map((item) => comicCardHtml(item)).join("")}</div></section>`;

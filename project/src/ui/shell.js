@@ -111,22 +111,23 @@ class AppShell {
         this.nav = nav;
         const menuToggle = mobileHeader.querySelector("[data-toggle-menu]");
         const menu = mobileHeader.querySelector(".mobile-navigation");
-        const closeMenu = () => {
-            menu.hidden = true;
-            menuToggle.setAttribute("aria-expanded", "false");
-            menuToggle.setAttribute("aria-label", "展开导航菜单");
-        };
-        menuToggle.addEventListener("click", () => {
-            const expanded = menu.hidden;
-            menu.hidden = !expanded;
-            menuToggle.setAttribute("aria-expanded", String(expanded));
-            menuToggle.setAttribute("aria-label", expanded ? "收起导航菜单" : "展开导航菜单");
+        this.menuSheet = new Sheet({
+            name: "navigation", title: "导航菜单",
+            onOpen: () => menuToggle.setAttribute("aria-expanded", "true"),
+            onClose: () => menuToggle.setAttribute("aria-expanded", "false"),
         });
-        mobileHeader.addEventListener("keydown", (event) => {
-            if (event.key === "Escape" && !menu.hidden) {
-                closeMenu();
-                menuToggle.focus();
-            }
+        this.menuSheet.root.classList.add("navigation-drawer");
+        menu.hidden = false;
+        menu.dataset.navigationScope = "same-tab";
+        this.menuSheet.body.appendChild(menu);
+        menuToggle.setAttribute("aria-haspopup", "dialog");
+        menuToggle.addEventListener("click", () => this.menuSheet.toggle({ opener: menuToggle }));
+        menu.addEventListener("click", (event) => {
+            if (event.target.closest("a, button")) this.menuSheet.close();
+        });
+        const desktop = window.matchMedia("(min-width: 700px)");
+        desktop.addEventListener("change", () => {
+            if (desktop.matches) this.menuSheet.close();
         });
 
         nav.querySelector(".nav-search").addEventListener("submit", (event) => {
@@ -136,10 +137,11 @@ class AppShell {
         document.addEventListener("click", (event) => {
             const trigger = event.target.closest("[data-open-search], [data-open-more], [data-open-account], [data-open-reading], [data-checkin]");
             if (!trigger) return;
-            if (trigger.hasAttribute("data-open-search")) this.openSearch(trigger);
-            else if (trigger.hasAttribute("data-open-more")) this.openMore(trigger);
-            else if (trigger.hasAttribute("data-open-account")) this.openAccount(trigger.dataset.openAccount || "", trigger);
-            else if (trigger.hasAttribute("data-open-reading")) this.openReading(trigger);
+            const opener = trigger.closest(".mobile-navigation") ? menuToggle : trigger;
+            if (trigger.hasAttribute("data-open-search")) this.openSearch(opener);
+            else if (trigger.hasAttribute("data-open-more")) this.openMore(opener);
+            else if (trigger.hasAttribute("data-open-account")) this.openAccount(trigger.dataset.openAccount || "", opener);
+            else if (trigger.hasAttribute("data-open-reading")) this.openReading(opener);
             else if (trigger.hasAttribute("data-checkin")) this.checkIn();
         });
         const renderSource = () => {
@@ -305,7 +307,7 @@ class AppShell {
             }
             const user = await authSession.loginFromLocalConfig();
             const result = await jmApi.dailyCheckIn(user?.uid);
-            showToast(result.message || "签到成功", "success");
+            showToast(result.message || "签到结果未确认", result.status === "success" ? "success" : result.status === "already" ? "default" : "warning");
         } catch (error) {
             showToast(error.message || "签到失败，请稍后重试", "warning");
         } finally {

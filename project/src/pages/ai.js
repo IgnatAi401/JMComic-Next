@@ -1,8 +1,8 @@
 import { mountShell } from "../ui/shell.js";
-import { Sheet } from "../ui/overlay.js";
 import { hydrateCovers, coverHtml } from "../ui/covers.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { isSingleChapterComic, keepSingleChapterComics } from "../utils/ComicChapterFilter.js";
+import { prepareContent } from "../local/ContentPreparation.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { reconcileListingFilters } from "../utils/ListingFilters.js";
 import { showToast } from "../ui/toast.js";
@@ -12,26 +12,6 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => 
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
 })[char]);
 const asList = (value) => Array.isArray(value) ? value : (value ? [value] : []);
-
-const BREAKDOWN_LABELS = {
-    cover: "封面相似",
-    cover_similarity: "封面相似",
-    title: "标题语义",
-    title_similarity: "标题语义",
-    author: "作者偏好",
-    author_affinity: "作者偏好",
-    tags: "标签偏好",
-    tag_affinity: "标签偏好",
-    tag_pair_affinity: "标签组合",
-    novelty: "新鲜度",
-    exploration: "探索奖励",
-    exploration_bonus: "探索奖励",
-    repetition: "重复惩罚",
-    repetition_penalty: "重复惩罚",
-    local_score: "本地基线",
-    overall_rating: "总评分偏好",
-    behavior_interest: "行为反馈",
-};
 
 const PROFILE_STAT_LABELS = {
     evidence_count: "有效样本",
@@ -58,7 +38,6 @@ const formatConfidence = (value) => {
     return value ? `置信 ${String(value)}` : "";
 };
 
-const humanizeKey = (key) => BREAKDOWN_LABELS[key] || String(key).replaceAll("_", " ");
 
 class AiPage {
     async init() {
@@ -71,24 +50,25 @@ class AiPage {
             this.loadProfile(),
             this.loadHistory(),
             this.loadCategories().catch((error) => showToast(`分类暂时不可用：${error.message}`, "warning")),
-            this.loadEmbeddingStatus(),
+            this.loadRecommendationStatus(),
         ]);
     }
 
-    async loadEmbeddingStatus() {
+    async loadRecommendationStatus() {
         const state = document.querySelector(".recommend-state");
         try {
-            const status = await localRuntime.getEmbeddingStatus();
-            this.embeddingStatus = status;
-            state.textContent = status.available
-                ? `${status.model || "qwen3-vl-embedding"} API 已就绪 · ${status.dimension || 1024} 维`
-                : `${status.model || "qwen3-vl-embedding"} API 未就绪 · ${status.reason || "请先配置百炼 API Key"}`;
-        } catch (error) {
-            state.textContent = error.message || "无法读取 Qwen API 状态";
-        }
+            const config = await localRuntime.getAiConfig();
+            state.textContent = config.configured
+                ? "内容证据增强已就绪 · 以7分为喜欢门槛"
+                : "以7分为喜欢门槛 · 配置语言模型后可提取标题和评论证据";
+        } catch (error) { state.textContent = error.message; }
     }
 
     bindEvents() {
+        document.querySelector(".cancel-recommendations").addEventListener("click", () => {
+            this.stopRequested = true;
+            document.querySelector(".recommend-state").textContent = "正在停止；已发出的请求结束后不再继续，已缓存证据保留。";
+        });
         document.querySelector(".generate-profile").addEventListener("click", () => this.generateProfile());
         this.form.addEventListener("submit", (event) => {
             event.preventDefault();
@@ -102,12 +82,6 @@ class AiPage {
             this.form.elements.limit.disabled = event.currentTarget.checked;
         });
         document.querySelector(".recommend-history").addEventListener("click", (event) => {
-            const rawButton = event.target.closest("[data-raw-run]");
-            if (rawButton) {
-                const run = this.history.find((item) => String(item.id) === rawButton.dataset.rawRun);
-                if (run) this.showRawOutput(run);
-                return;
-            }
             const button = event.target.closest("[data-run]");
             if (!button) return;
             const run = this.history.find((item) => String(item.id) === button.dataset.run);
@@ -318,7 +292,7 @@ class AiPage {
         const excluded = new Set(((await localRuntime.getDiscoveryExcludedIds()).ids || []).map(String));
         const candidates = [];
         const seen = new Set(excluded);
-        for (let page = 1; page <= 30 && candidates.length < target; page += 1) {
+        for (let page = 1; page <= 30 && !this.stopRequested && candidates.length < target; page += 1) {
             state.textContent = `正在初筛第 ${page} 页 · 已收集 ${candidates.length} / ${target}`;
             const result = await jmApi.getFilteredComics(keyword, page, {
                 order,
@@ -343,7 +317,7 @@ class AiPage {
         const enriched = new Array(candidates.length);
         let cursor = 0;
         const worker = async () => {
-            while (cursor < candidates.length) {
+            while (!this.stopRequested && cursor < candidates.length) {
                 const index = cursor++;
                 const item = candidates[index];
                 try {
@@ -351,6 +325,7 @@ class AiPage {
                     enriched[index] = {
                         id: String(album.id), title: album.name || item.name || "未命名作品",
                         authors: asList(album.author), tags: asList(album.tags),
+                        description: typeof album.description === "string" ? album.description : "",
                         cover_url: jmApi.getCoverImageURL(album.id),
                     };
                 } catch {
@@ -383,7 +358,7 @@ class AiPage {
         let completed = 0;
 
         const worker = async () => {
-            while (candidates.length < target && attempts < maxAttempts) {
+            while (!this.stopRequested && candidates.length < target && attempts < maxAttempts) {
                 let id = "";
                 for (let retry = 0; retry < 20 && !id; retry += 1) {
                     const generated = this.randomComicId();
@@ -429,27 +404,38 @@ class AiPage {
     async generateRecommendations() {
         if (this.generating) return;
         this.generating = true;
+        this.stopRequested = false;
         const button = document.querySelector(".generate-recommendations");
         const state = document.querySelector(".recommend-state");
         const target = Math.min(300, Math.max(1, Number(this.form.elements.candidate_count.value) || 50));
         const controls = [...this.form.elements].map((control) => [control, control.disabled]);
         controls.forEach(([control]) => { control.disabled = true; });
         button.disabled = true;
+        const cancel = document.querySelector(".cancel-recommendations");
+        cancel.hidden = false;
+        cancel.disabled = false;
         try {
             const collected = await this.collectCandidates(target, state);
-            state.textContent = `已找到 ${collected.candidates.length} 本，正在调用 Qwen API 补齐封面、标题与联合向量，再按总评分偏好排序…`;
+            if (this.stopRequested) return;
+            const preparation = await prepareContent({
+                runtime: localRuntime, api: jmApi, candidates: collected.candidates,
+                budget: Number(this.form.elements.content_budget.value) || 0,
+                stopped: () => this.stopRequested,
+                progress: ({ finished, total, failed }) => {
+                    if (!this.stopRequested) state.textContent = `正在提取内容证据 · ${finished}/${total}${failed ? ` · ${failed} 本暂不可用` : ""}`;
+                },
+            });
+            if (this.stopRequested) return;
+            state.textContent = "正在根据历史评分和可用内容证据排序…";
             const result = await localRuntime.generateRecommendations({
                 ...collected,
                 limit: this.form.elements.limit_all.checked
                     ? "all"
                     : Math.min(100, Math.max(1, Number(this.form.elements.limit.value) || 10)),
             });
+            if (this.stopRequested) return;
             const blocked = Number(result.blocked_by_preferences) || 0;
-            const embedding = result.embeddings;
-            const embeddingState = embedding
-                ? ` · Qwen 向量 ${Number(embedding.ready) || 0}/${Number(embedding.total) || 0}`
-                : "";
-            state.textContent = `完成 · 推荐 ${result.recommendations.length} 本${embeddingState}${blocked ? ` · 硬屏蔽过滤 ${blocked} 本` : ""}`;
+            state.textContent = `完成 · 推荐 ${result.recommendations.length} 本 · 新增证据 ${preparation.prepared} 本${preparation.failed ? ` · 提取失败 ${preparation.failed} 本` : ""}${preparation.remaining ? ` · 尚有 ${preparation.remaining} 本待补充` : ""}${blocked ? ` · 屏蔽 ${blocked} 本` : ""}`;
             this.renderResults(result.recommendations, `本次推荐 #${result.id}`, result.id);
             await this.loadHistory();
             showToast("推荐已生成并留档", "success");
@@ -457,49 +443,20 @@ class AiPage {
             state.textContent = error.message || "推荐生成失败";
             await this.loadHistory();
         } finally {
+            if (this.stopRequested) state.textContent = "已停止，已完成的内容证据留在缓存中。";
+            cancel.hidden = true;
             this.generating = false;
             controls.forEach(([control, disabled]) => { control.disabled = disabled; });
             button.disabled = false;
         }
     }
 
-    showRawOutput(run) {
-        this.rawSheet ||= new Sheet({ name: "diagnostics", title: "推荐诊断信息", wide: true });
-        this.rawSheet.setTitle(`推荐 #${run.id} · 诊断信息`);
-        const entries = Array.isArray(run.raw_outputs) ? run.raw_outputs : [];
-        this.rawSheet.body.innerHTML = entries.length ? entries.map((entry, i) => {
-            const value = entry.response ?? entry.output ?? null;
-            return `<section class="raw-output-entry"><h3>${escapeHtml(entry.label || entry.stage || `调用 ${i + 1}`)}</h3><pre>${escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2))}</pre></section>`;
-        }).join("") : `<p>${escapeHtml(run.error || "这条记录没有诊断信息。")}</p>`;
-        this.rawSheet.open();
-    }
-
     renderScoreBreakdown(breakdown) {
-        if (!breakdown || typeof breakdown !== "object") return "";
-        const entries = Array.isArray(breakdown)
-            ? breakdown.map((value, index) => [value?.key || value?.feature || value?.source || `依据 ${index + 1}`, value])
-            : Object.entries(breakdown);
-        const markup = entries.map(([key, raw]) => {
-            if (raw === null || raw === undefined) return "";
-            const object = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
-            const label = object?.label || object?.name || humanizeKey(key);
-            const detailValue = object?.reason ?? object?.detail ?? object?.description
-                ?? (typeof raw === "string" ? raw : "");
-            const detail = Array.isArray(detailValue) ? detailValue.join("、") : detailValue;
-            const contribution = finiteNumber(object
-                ? object.contribution ?? object.weighted_score ?? object.delta ?? object.value
-                : (typeof raw === "number" ? raw : null));
-            const confidence = formatConfidence(object?.confidence ?? object?.certainty);
-            if (contribution === null && !detail && !confidence) return "";
-            const contributionText = contribution === null
-                ? ""
-                : `${contribution > 0 ? "+" : ""}${Number.isInteger(contribution) ? contribution : contribution.toFixed(2)}`;
-            const tone = contribution === null ? "neutral" : (contribution >= 0 ? "positive" : "negative");
-            return `<div class="score-breakdown-item ${tone}"><div><strong>${escapeHtml(label)}</strong>${contributionText ? `<em>${escapeHtml(contributionText)}</em>` : ""}</div>${detail ? `<p>${escapeHtml(detail)}</p>` : ""}${confidence ? `<small>${escapeHtml(confidence)}</small>` : ""}</div>`;
-        }).filter(Boolean);
-        return markup.length
-            ? `<details class="score-breakdown"><summary><span>评分依据</span><small>${markup.length} 项</small><i aria-hidden="true"></i></summary><div>${markup.join("")}</div></details>`
-            : "";
+        const markup = breakdown.map(item => {
+            const value = item.contribution;
+            return `<div class="score-breakdown-item ${value >= 0 ? "positive" : "negative"}"><div><strong>${escapeHtml(item.label)}</strong><em>${value > 0 ? "+" : ""}${value.toFixed(2)}</em></div>${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}</div>`;
+        }).join("");
+        return `<details class="score-breakdown"><summary><span>评分依据</span><small>${breakdown.length} 项</small></summary><div>${markup}</div></details>`;
     }
 
     renderResults(items, label, runId = null, source = "recommendation_results") {
@@ -511,19 +468,12 @@ class AiPage {
         }
         root.innerHTML = items.map((item, index) => {
             const score = finiteNumber(item.score);
-            const localScore = finiteNumber(item.local_score);
             const metadata = [label, `#${index + 1}`];
             if (score !== null) metadata.push(`总推荐分 ${Number.isInteger(score) ? score : score.toFixed(1)}`);
-            if (localScore !== null && (score === null || Math.abs(localScore - score) >= 0.05)) {
-                metadata.push(`本地评分 ${Number.isInteger(localScore) ? localScore : localScore.toFixed(1)}分`);
-            }
-            const reason = typeof item.reason === "string"
-                ? item.reason
-                : (item.reason?.summary || item.summary || "暂无文字说明，可展开查看评分依据");
-            const coverUrl = item.cover_url || jmApi.getCoverImageURL(item.id);
+            const reason = item.reason;
             return `<article class="ai-result-item" data-recommendation-card="${escapeHtml(item.id)}" data-run-id="${escapeHtml(runId ?? "")}" data-position="${index + 1}" data-recommendation-source="${escapeHtml(source)}">
             ${coverHtml(item, { href: `./chapter.html?id=${encodeURIComponent(item.id)}` }).replace('class="cover"', 'class="cover" data-recommendation-open')}
-            <div class="ai-result-copy"><small>${escapeHtml(metadata.join(" · "))}</small><h3><a data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}">${escapeHtml(item.title)}</a></h3><p>${escapeHtml(reason)}</p>${this.renderScoreBreakdown(item.score_breakdown || item.score_components)}${asList(item.tags).length ? `<div class="ai-result-tags">${asList(item.tags).slice(0, 8).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div>
+            <div class="ai-result-copy"><small>${escapeHtml(metadata.join(" · "))}</small><h3><a data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}">${escapeHtml(item.title)}</a></h3><p>${escapeHtml(reason)}</p>${this.renderScoreBreakdown(item.score_breakdown)}${item.evidence.length ? `<details class="score-breakdown"><summary>内容证据 · ${item.evidence.length} 项</summary>${item.evidence.map(e => `<p><strong>${escapeHtml(e.label)}</strong>（${e.source.startsWith("comment:") ? "读者评论" : "作品资料"}）：${escapeHtml(e.quote)}</p>`).join("")}</details>` : ""}${asList(item.tags).length ? `<div class="ai-result-tags">${asList(item.tags).slice(0, 8).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div>
         </article>`;
         }).join("");
         hydrateCovers(root);
@@ -573,10 +523,7 @@ class AiPage {
             const root = document.querySelector(".recommend-history");
             root.innerHTML = this.history.length ? this.history.map((run) => {
                 const count = run.recommendations?.length || 0;
-                const rawButton = (run.raw_outputs?.length || run.error)
-                    ? `<button class="history-raw" data-raw-run="${run.id}" type="button">诊断信息</button>`
-                    : "";
-                return `<div class="history-run-group"><button class="history-run ${run.status}" data-run="${run.id}" type="button">#${run.id} · ${new Date(run.created_at * 1000).toLocaleString("zh-CN")} · ${run.status === "success" ? `${count} 本` : "失败"}</button>${rawButton}</div>`;
+                return `<div class="history-run-group"><button class="history-run ${run.status}" data-run="${run.id}" type="button">#${run.id} · ${new Date(run.created_at * 1000).toLocaleString("zh-CN")} · ${run.status === "success" ? `${count} 本` : "失败"}</button></div>`;
             }).join("") : '<p class="ai-empty">还没有推荐记录。</p>';
         } catch (error) {
             document.querySelector(".recommend-history").innerHTML = `<p class="ai-empty">${escapeHtml(error.message || "历史读取失败")}</p>`;

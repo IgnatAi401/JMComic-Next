@@ -409,3 +409,114 @@ test("image restoration frees every allocated canvas when a later slice fails", 
         });
     }
 });
+
+function checkInHarness(replies) {
+    const requests = [];
+    const api = loadModule('api/JmcomicApi.js', 'jmApi', {
+        crypto: { calculateMD5: () => 'test', decryptData: (_key, value) => JSON.parse(value) },
+        fetch: async (_url, options) => {
+            const request = JSON.parse(options.body);
+            requests.push(request);
+            const next = replies.shift();
+            if (next instanceof Error) throw next;
+            if (!next) throw new Error('Unexpected request');
+            return { ok: true, status: 200, json: async () => next };
+        },
+    });
+    api.servers = ['fixture.invalid'];
+    return { api, requests };
+}
+const dailyActivity = () => ({ code: 200, data: { daily_id: 68 } });
+
+test('check-in distinguishes confirmed success, already checked in, and ambiguous rewards', async () => {
+    for (const status of [1, true, 'success', 'ok', 200, '200']) {
+        const { api, requests } = checkInHarness([dailyActivity(), { code: 200, data: { status, msg: '[EXP:10] [COIN:2]' } }]);
+        const result = await api.dailyCheckIn('42');
+        assert.equal(result.status, 'success');
+        assert.match(result.message, /获得 10 经验.*获得 2 金币/);
+        assert.equal(requests[0].path, '/daily?user_id=42');
+        assert.deepEqual(requests[1].data, { user_id: '42', daily_id: '68' });
+    }
+    for (const msg of ['今天已经签到', '今日已經簽到', '重复签到', 'already checked in']) {
+        const { api } = checkInHarness([dailyActivity(), { code: 200, data: { status: 0, msg } }]);
+        assert.equal((await api.dailyCheckIn('42')).status, 'already');
+    }
+    for (const data of [{}, { msg: '[EXP:10]' }, { status: 'unknown', msg: '签到成功' }]) {
+        const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
+        await assert.rejects(api.dailyCheckIn('42'), /未确认成功/);
+    }
+});
+
+test('check-in does not let success or reward text hide explicit failures', async () => {
+    for (const data of [
+        { status: 0, msg: '签到成功' },
+        { status: 'success', msg: '签到失败 [EXP:10]' },
+        { status: 1, msg: '尚未签到成功' },
+        { status: 1, error: '登录失效' },
+        { status: 1, msg: '没有签到成功' },
+    ]) {
+        const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
+        await assert.rejects(api.dailyCheckIn('42'), /返回失败/);
+    }
+    const { api } = checkInHarness([dailyActivity(), { code: 500, msg: '服务繁忙', data: { status: 1 } }]);
+    await assert.rejects(api.dailyCheckIn('42'), /服务繁忙/);
+});
+
+test('check-in preserves envelope messages and decodes encrypted responses', async () => {
+    const { api } = checkInHarness([dailyActivity(), { code: 200, msg: '签到成功', data: {} }]);
+    assert.equal((await api.dailyCheckIn('42')).status, 'success');
+    const encrypted = checkInHarness([dailyActivity(), { code: 200, data: JSON.stringify({ status: 1, msg: '簽到成功' }) }]);
+    assert.equal((await encrypted.api.dailyCheckIn('42')).status, 'success');
+});
+
+test('check-in identifies the failed stage and never retries an ambiguous POST', async () => {
+    const before = checkInHarness([new Error('Failed to fetch')]);
+    await assert.rejects(before.api.dailyCheckIn('42'), /尚未提交签到.*网络/);
+    assert.equal(before.requests.length, 1);
+    const after = checkInHarness([dailyActivity(), Object.assign(new Error('aborted'), { name: 'AbortError' })]);
+    await assert.rejects(after.api.dailyCheckIn('42'), /结果未确认.*超时.*可能已生效/);
+    assert.equal(after.requests.length, 2);
+    assert.equal(after.api.dailyCheckInPromise, null);
+    const invalid = checkInHarness([{ code: 200, data: {} }]);
+    await assert.rejects(invalid.api.dailyCheckIn('42'), /尚未提交签到.*活动 ID/);
+    assert.equal(invalid.requests.length, 1);
+});
+
+test('check-in coalesces same-account clicks, rejects cross-account overlap and permits later attempts', async () => {
+    const { api, requests } = checkInHarness([dailyActivity(), { data: { status: 1 } }, dailyActivity(), { data: { msg: '今天已签到' } }]);
+    const first = api.dailyCheckIn('42');
+    const second = api.dailyCheckIn('42');
+    await assert.rejects(api.dailyCheckIn('43'), /另一个账号/);
+    await Promise.all([first, second]);
+    assert.equal(requests.length, 2);
+    assert.equal((await api.dailyCheckIn('42')).status, 'already');
+    assert.equal(requests.length, 4);
+});
+
+
+test('check-in UI shows distinct tones and restores controls after every outcome', async () => {
+    const labels = [{ textContent: '每日签到' }];
+    const buttons = [{ disabled: false }];
+    let result;
+    const toasts = [];
+    const shell = loadModule('ui/shell.js', 'new AppShell()', {
+        icon: () => '',
+        document: { querySelectorAll: selector => selector === '[data-checkin-label]' ? labels : buttons },
+        authSession: { loadLocalConfig: async () => {}, isConfigured: true, loginFromLocalConfig: async () => ({ uid: '42' }) },
+        jmApi: { dailyCheckIn: async () => { if (result instanceof Error) throw result; return result; } },
+        showToast: (...args) => toasts.push(args),
+    });
+    for (const [value, tone] of [
+        [{ status: 'success', message: '签到成功' }, 'success'],
+        [{ status: 'already', message: '今天已签到' }, 'default'],
+        [new Error('签到结果未确认：请求超时'), 'warning'],
+        [new Error('签到接口返回失败：登录失效'), 'warning'],
+    ]) {
+        result = value;
+        await shell.checkIn();
+        assert.equal(toasts.at(-1)[1], tone);
+        assert.equal(labels[0].textContent, '每日签到');
+        assert.equal(buttons[0].disabled, false);
+        assert.equal(shell.checkingIn, false);
+    }
+});

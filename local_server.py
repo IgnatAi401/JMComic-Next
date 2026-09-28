@@ -25,6 +25,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from local_features import LocalFeatureError, LocalFeatureStore
 from qwen_embeddings import QwenEmbeddingError, QwenEmbeddingRuntime
+from rating_semantics import RatingSemantics
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -34,6 +35,7 @@ CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
 ACCOUNT_FILE = DATA_DIR / "account.json"
 local_features = LocalFeatureStore(DATA_DIR)
 embedding_runtime = QwenEmbeddingRuntime(local_features)
+rating_semantics = RatingSemantics(local_features)
 
 CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications"}
 CACHE_KEY = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -554,8 +556,15 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/library/comic":
             try:
                 comic = local_features.get_comic(parse_qs(parsed.query).get("id", [""])[0])
-                self.send_json({"comic": comic})
+                self.send_json({"comic": comic, "rating_semantics": rating_semantics.get(comic["id"]) if comic else None})
             except LocalFeatureError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/ai/rating-semantics":
+            try:
+                comic_id = parse_qs(parsed.query).get("id", [None])[0]
+                self.send_json(rating_semantics.get(comic_id) if comic_id else rating_semantics.overview())
+            except (LocalFeatureError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
         if parsed.path == "/local-api/library/comics":
@@ -719,8 +728,22 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 comic = local_features.upsert_comic(body)
                 if comic_has_explicit_embedding_evidence(comic):
                     embedding_runtime.enqueue_background(comic)
-                self.send_json({"comic": comic})
+                try:
+                    semantics = (rating_semantics.enqueue(comic["id"]) if "rating" in body or "review" in body
+                                 else rating_semantics.get(comic["id"]))
+                except Exception:
+                    semantics = {"status": "error", "text": "", "current": False,
+                                 "error": "评价已保存，语义评价未启动，请在设置中重试。"}
+                self.send_json({"comic": comic, "rating_semantics": semantics})
             except LocalFeatureError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/ai/rating-semantics/update":
+            if self.read_json_body() is None:
+                return
+            try:
+                self.send_json(rating_semantics.update_missing())
+            except (LocalFeatureError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
         if parsed.path == "/local-api/library/feedback/states":
@@ -754,22 +777,30 @@ class LocalHandler(SimpleHTTPRequestHandler):
             if body is None:
                 return
             try:
-                prepared = embedding_runtime.prepare_candidates(body.get("candidates"))
-                ready_ids = set(prepared["ready_ids"])
-                request_body = {
-                    **body,
-                    "candidates": [
-                        item for item in body.get("candidates", [])
-                        if isinstance(item, dict) and str(item.get("id") or "") in ready_ids
-                    ],
-                }
-                result = local_features.generate_recommendations(request_body)
-                result["embeddings"] = prepared
-                self.send_json(result)
+                self.send_json(local_features.generate_recommendations(body))
             except QwenEmbeddingError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
             except (LocalFeatureError, TypeError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
+            return
+        if parsed.path in {"/local-api/ai/content/plan", "/local-api/ai/content/prepare"}:
+            body = self.read_json_body()
+            if body is None:
+                return
+            try:
+                from content_evidence import ContentEvidence
+                runtime = ContentEvidence(local_features)
+                if parsed.path.endswith("/plan"):
+                    candidates = body.get("candidates", [])
+                    if not isinstance(candidates, list) or len(candidates) > 300:
+                        raise ValueError("候选数量无效")
+                    if any(not isinstance(item, dict) or not str(item.get("id", "")).isdigit() for item in candidates):
+                        raise ValueError("候选编号无效")
+                    self.send_json(runtime.plan(candidates))
+                else:
+                    self.send_json(runtime.prepare(body))
+            except (LocalFeatureError, ValueError, TypeError) as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
         if parsed.path == "/local-api/ai/recommendations/feedback":
             body = self.read_json_body()
@@ -976,6 +1007,7 @@ def main() -> None:
         pass
     finally:
         embedding_runtime.stop()
+        rating_semantics.stop()
         server.server_close()
 
 

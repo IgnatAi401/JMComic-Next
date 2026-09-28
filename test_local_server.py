@@ -27,6 +27,7 @@ local_server.CACHE_DIR = local_server.DATA_DIR / "cache" / "api"
 
 def tearDownModule():
     local_server.embedding_runtime.stop()
+    local_server.rating_semantics.stop()
     _server_temporary.cleanup()
 
 
@@ -119,6 +120,33 @@ class LocalHandlerConfigGetTests(unittest.TestCase):
 
 
 class LocalHandlerBodyTests(unittest.TestCase):
+    def test_rating_save_is_committed_before_summary_and_survives_summary_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalFeatureStore(Path(directory))
+            def fail_after_commit(comic_id):
+                self.assertEqual(store.get_comic(comic_id)["rating"], 8)
+                self.assertEqual(store.get_comic(comic_id)["review"], "我的评语")
+                raise RuntimeError("unavailable")
+            runtime = Mock()
+            runtime.enqueue.side_effect = fail_after_commit
+            handler = _handler_with_body({"id": "99", "rating": 8, "review": "我的评语"})
+            handler.path = "/local-api/library/comic"
+            with patch.object(local_server, "local_features", store), patch.object(local_server, "rating_semantics", runtime), \
+                 patch.object(local_server.embedding_runtime, "enqueue_background"):
+                handler.do_POST()
+            result = handler.send_json.call_args.args[0]
+            self.assertEqual(result["comic"]["rating"], 8)
+            self.assertEqual(result["rating_semantics"]["status"], "error")
+
+    def test_recommendation_route_does_not_require_embeddings(self):
+        handler = _handler_with_body({"candidates": [{"id": "1", "title": "候选"}]})
+        handler.path = "/local-api/ai/recommendations/generate"
+        expected = {"recommendations": [{"id": "1"}]}
+        with patch.object(local_server.local_features, "generate_recommendations", return_value=expected), \
+             patch.object(local_server.embedding_runtime, "prepare_candidates", side_effect=AssertionError("not needed")):
+            handler.do_POST()
+        handler.send_json.assert_called_once_with(expected)
+
     def test_json_body_must_be_an_object(self):
         for value in (None, [], [1], "text", 3, True):
             with self.subTest(value=value):

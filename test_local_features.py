@@ -124,7 +124,8 @@ class PreferenceModelTests(unittest.TestCase):
         self.assertEqual(result["blocked_by_preferences"], 1)
         self.assertEqual([item["id"] for item in result["recommendations"]], ["101"])
         item = result["recommendations"][0]
-        self.assertLessEqual(item["score"], item["local_score"] + 12)
+        self.assertGreaterEqual(item["score"], 0)
+        self.assertLessEqual(item["score"], 100)
         feedback = self.store.save_recommendation_feedback({
             "comic_id": "101", "run_id": result["id"], "action": "interested",
         })
