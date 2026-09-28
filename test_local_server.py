@@ -27,7 +27,7 @@ local_server.CACHE_DIR = local_server.DATA_DIR / "cache" / "api"
 
 def tearDownModule():
     local_server.embedding_runtime.stop()
-    local_server.rating_semantics.stop()
+    local_server.content_analysis.stop()
     _server_temporary.cleanup()
 
 
@@ -131,12 +131,12 @@ class LocalHandlerBodyTests(unittest.TestCase):
             runtime.enqueue.side_effect = fail_after_commit
             handler = _handler_with_body({"id": "99", "rating": 8, "review": "我的评语"})
             handler.path = "/local-api/library/comic"
-            with patch.object(local_server, "local_features", store), patch.object(local_server, "rating_semantics", runtime), \
+            with patch.object(local_server, "local_features", store), patch.object(local_server, "content_analysis", runtime), \
                  patch.object(local_server.embedding_runtime, "enqueue_background"):
                 handler.do_POST()
             result = handler.send_json.call_args.args[0]
             self.assertEqual(result["comic"]["rating"], 8)
-            self.assertEqual(result["rating_semantics"]["status"], "error")
+            self.assertEqual(result["content_analysis"]["status"], "error")
 
     def test_recommendation_route_does_not_require_embeddings(self):
         handler = _handler_with_body({"candidates": [{"id": "1", "title": "候选"}]})
@@ -345,3 +345,36 @@ class LibraryHistoryRouteTests(unittest.TestCase):
                 handler.path = "/local-api/library/history?kind=invalid"
                 handler.do_GET()
                 self.assertEqual(handler.send_json.call_args.kwargs["status"], HTTPStatus.BAD_REQUEST)
+
+
+class RecommendationJobRouteTests(unittest.TestCase):
+    def test_committed_job_ack_and_storage_failure_are_distinct(self):
+        handler = _handler_with_body({'id': 'task-1234567890123456', 'payload': {}})
+        handler.path = '/local-api/ai/recommendation-jobs'
+        with patch.object(local_server, 'recommendation_jobs') as jobs:
+            jobs.submit.return_value = {'id': 'task-1234567890123456', 'accepted': True}
+            handler.do_POST()
+            self.assertTrue(handler.send_json.call_args.args[0]['accepted'])
+            jobs.submit.side_effect = OSError('disk full')
+            handler.rfile.seek(0)
+            handler.do_POST()
+            self.assertEqual(handler.send_json.call_args.kwargs['status'], HTTPStatus.SERVICE_UNAVAILABLE)
+            self.assertNotIn('accepted', handler.send_json.call_args.args[0])
+
+    def test_missing_job_is_not_reported_as_running(self):
+        handler = _handler_with_body({})
+        handler.path = '/local-api/ai/recommendation-jobs?id=missing'
+        with patch.object(local_server, 'recommendation_jobs') as jobs:
+            jobs.get.return_value = None
+            handler.do_GET()
+            self.assertEqual(handler.send_json.call_args.kwargs['status'], HTTPStatus.NOT_FOUND)
+
+    def test_task_database_cannot_be_downloaded_as_static_file(self):
+        handler = _handler_with_body({})
+        handler.directory = str(local_server.PROJECT_DIR)
+        handler.send_error = Mock()
+        for path in ['/data/recommendation_jobs.sqlite3', '/data/recommendation_jobs.sqlite3-journal',
+                     '/data/%72ecommendation_jobs.sqlite3']:
+            handler.path = path
+            self.assertIsNone(handler.send_head())
+            handler.send_error.assert_called_with(HTTPStatus.NOT_FOUND)

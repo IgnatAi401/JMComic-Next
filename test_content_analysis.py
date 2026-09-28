@@ -6,16 +6,16 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from local_features import LocalFeatureStore
-from rating_semantics import RatingSemantics
+from content_analysis import ContentAnalysis
 
 
-class RatingSemanticsTests(unittest.TestCase):
+class ContentAnalysisTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = LocalFeatureStore(Path(self.temp.name))
         self.store.read_ai_config = lambda **kwargs: {"configured": True, "model": "fake", "base_url": "https://example.invalid"}
-        self.store.ai_content = Mock(return_value="评价总结\n设定展开充分。\n证据不足之处\n未检查正文。")
-        self.runtime = RatingSemantics(self.store)
+        self.store.ai_content = Mock(return_value=json.dumps({"summary": "记忆交换影响人物关系", "assertions": {"development": {"value": 0.8, "source": "user_review", "quote": "设定展开充分"}}}, ensure_ascii=False))
+        self.runtime = ContentAnalysis(self.store)
 
     def tearDown(self):
         self.runtime.queue.join()
@@ -33,10 +33,12 @@ class RatingSemanticsTests(unittest.TestCase):
         self.runtime.queue.join()
         result = self.runtime.get("1")
         self.assertTrue(result["current"])
-        self.assertEqual(result["text"], self.store.ai_content.return_value)
+        self.assertIn(self.store.ai_content.return_value, result["text"])
+        self.assertIn("1", self.runtime.content.features())
+        self.assertEqual(self.runtime.content.features()["1"]["assertions"]["development"]["value"], 0.8)
         payload = json.loads(self.store.ai_content.call_args.args[0][-1]["content"])
-        self.assertEqual(payload["rating"], 8)
-        self.assertEqual(payload["review"], "设定展开充分，但结尾仓促。")
+        self.assertNotIn("rating", payload)
+        self.assertEqual(payload["user_review"], "设定展开充分，但结尾仓促。")
         self.runtime.enqueue("1")
         self.runtime.update_missing()
         self.runtime.queue.join()
@@ -79,7 +81,7 @@ class RatingSemanticsTests(unittest.TestCase):
             payload = json.loads(messages[-1]["content"])
             started.set()
             release.wait(3)
-            return payload["review"]
+            return json.dumps({"summary": payload["user_review"], "assertions": {}})
         self.store.ai_content.side_effect = remote
         self.save(review="旧版")
         self.runtime.enqueue("1")
@@ -89,7 +91,8 @@ class RatingSemanticsTests(unittest.TestCase):
         self.runtime.enqueue("1")
         release.set()
         self.runtime.queue.join()
-        self.assertEqual(self.runtime.get("1")["text"], "新版")
+        self.assertIn("新版", self.runtime.get("1")["text"])
+        self.assertNotIn("旧版", self.runtime.get("1")["text"])
         self.assertEqual(self.store.ai_content.call_count, 2)
 
     def test_clearing_rating_hides_summary_and_prevents_stale_write(self):
@@ -111,9 +114,79 @@ class RatingSemanticsTests(unittest.TestCase):
     def test_restart_exposes_interrupted_work_as_missing_for_bulk_retry(self):
         self.save()
         digest = self.runtime.snapshot(self.store.get_comic("1"))[0]
-        with self.store._managed_connection() as db:
-            db.execute("INSERT INTO rating_semantics VALUES(?,?,'running','','fake','',0)", ("1", digest))
+        # No result was committed before interruption; a fresh manager can retry.
+        self.runtime = ContentAnalysis(self.store)
         self.assertEqual(self.runtime.get("1")["status"], "missing")
         self.runtime.update_missing()
         self.runtime.queue.join()
         self.assertTrue(self.runtime.get("1")["current"])
+
+    def test_saved_analysis_is_the_ranker_input_and_review_invalidates_it(self):
+        self.save(review="设定展开充分")
+        self.runtime.enqueue("1")
+        self.runtime.queue.join()
+        model = self.store._build_preference_model()
+        self.assertEqual(model["ranker"].features(self.store.get_comic("1"))["content:development"], 0.8)
+        self.save(review="修改了内容描述")
+        self.assertNotIn("1", self.store._build_preference_model()["content"])
+        self.assertTrue(self.runtime.content.plan([])["training"])
+
+    def test_recommendation_analysis_and_background_share_cache(self):
+        self.save(review="设定展开充分")
+        self.runtime.content.prepare({"id": "1", "title": "测试作品"})
+        self.assertTrue(self.runtime.get("1")["current"])
+        self.runtime.update_missing()
+        self.runtime.queue.join()
+        self.assertEqual(self.store.ai_content.call_count, 1)
+        self.runtime.content.prepare({"id": "2", "title": "候选作品"})
+        self.store.upsert_comic({"id": "2", "title": "候选作品", "favorite": True})
+        self.assertIn("2", self.runtime.content.features())
+        self.assertEqual(self.runtime.get("2")["status"], "unrated")
+
+    def test_parallel_recommendation_and_background_do_not_duplicate_calls(self):
+        started, release = threading.Event(), threading.Event()
+        def remote(*args, **kwargs):
+            started.set()
+            release.wait(3)
+            return '{"summary":"作品内容","assertions":{}}'
+        self.store.ai_content.side_effect = remote
+        self.save()
+        self.runtime.enqueue("1")
+        self.assertTrue(started.wait(2))
+        thread = threading.Thread(target=lambda: self.runtime.content.prepare({"id": "1", "title": "测试作品"}))
+        thread.start()
+        release.set()
+        thread.join(3)
+        self.runtime.queue.join()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.store.ai_content.call_count, 1)
+
+    def test_cleared_rating_during_request_never_commits_review_evidence(self):
+        started, release = threading.Event(), threading.Event()
+        def remote(*args, **kwargs):
+            started.set()
+            release.wait(3)
+            return '{"assertions":{}}'
+        self.store.ai_content.side_effect = remote
+        self.save(review="设定展开充分")
+        self.runtime.enqueue("1")
+        self.assertTrue(started.wait(2))
+        self.save(rating=None)
+        self.runtime.enqueue("1")
+        release.set()
+        self.runtime.queue.join()
+        self.assertNotIn("1", self.runtime.content.features())
+        self.assertEqual(self.runtime.get("1")["status"], "unrated")
+
+    def test_legacy_summary_cleanup_preserves_user_data(self):
+        self.save(review="保留评语", favorite=True)
+        with self.store._managed_connection() as db:
+            db.execute("CREATE TABLE rating_semantics (text TEXT)")
+            db.execute("INSERT INTO rating_semantics VALUES ('旧总结')")
+        reopened = LocalFeatureStore(Path(self.temp.name))
+        comic = reopened.get_comic("1")
+        self.assertEqual(comic["rating"], 8)
+        self.assertEqual(comic["review"], "保留评语")
+        self.assertTrue(comic["favorite"])
+        with reopened._managed_connection() as db:
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='rating_semantics'").fetchone())

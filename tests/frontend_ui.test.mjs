@@ -321,12 +321,12 @@ test('a failed rating save preserves the score, review and tag draft for retry',
 test('rating summary displays complete model text safely and labels stale output', async () => {
     const {exports} = await environment('ui/rating.js');
     const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
-    editor.watchSemantics({status:'ready', current:true, text:'评价总结\n<img src=x onerror=alert(1)>\n完整返回'});
-    assert.equal(root.querySelector('[data-summary-text]').textContent, '评价总结\n<img src=x onerror=alert(1)>\n完整返回');
+    editor.watchAnalysis({status:'ready', current:true, text:'评价分析\n<img src=x onerror=alert(1)>\n完整返回'});
+    assert.equal(root.querySelector('[data-summary-text]').textContent, '评价分析\n<img src=x onerror=alert(1)>\n完整返回');
     assert.equal(root.querySelector('[data-summary-text]').innerHTML, '');
-    editor.watchSemantics({status:'stale', current:false, text:'旧总结'});
-    assert.match(root.querySelector('[data-summary-text]').textContent, /上次总结/);
-    editor.watchSemantics({status:'unrated', current:false, text:''});
+    editor.watchAnalysis({status:'stale', current:false, text:'旧分析'});
+    assert.match(root.querySelector('[data-summary-text]').textContent, /上次分析/);
+    editor.watchAnalysis({status:'unrated', current:false, text:''});
     assert.equal(root.querySelector('[data-summary-text]').textContent, '');
 });
 
@@ -334,13 +334,13 @@ test('a late summary poll cannot replace a newer saved review result', async () 
     const {exports, localRuntime, runTimers} = await environment('ui/rating.js');
     const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
     const old = deferred();
-    localRuntime.getRatingSemantics = () => old.promise;
-    editor.watchSemantics({status:'running', current:false, text:''});
+    localRuntime.getContentAnalysis = () => old.promise;
+    editor.watchAnalysis({status:'running', current:false, text:''});
     runTimers(1500);
-    editor.watchSemantics({status:'ready', current:true, text:'新评语的总结'});
-    old.resolve({status:'ready', current:true, text:'旧评语的总结'});
+    editor.watchAnalysis({status:'ready', current:true, text:'新评语的分析'});
+    old.resolve({status:'ready', current:true, text:'旧评语的分析'});
     await old.promise;
-    assert.equal(root.querySelector('[data-summary-text]').textContent, '新评语的总结');
+    assert.equal(root.querySelector('[data-summary-text]').textContent, '新评语的分析');
 });
 
 test('seeking clamps page numbers and realigns after earlier images change height', async () => {
