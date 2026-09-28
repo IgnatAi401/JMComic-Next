@@ -367,14 +367,12 @@ class LocalFeatureStore:
                     assertions_json TEXT NOT NULL, status TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS rating_semantics (
-                    comic_id TEXT PRIMARY KEY REFERENCES comics(id) ON DELETE CASCADE,
-                    input_hash TEXT NOT NULL, status TEXT NOT NULL,
-                    text TEXT NOT NULL, model TEXT NOT NULL,
-                    error TEXT NOT NULL, updated_at INTEGER NOT NULL
-                );
+                DROP TABLE IF EXISTS rating_semantics;
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(content_evidence)")}
+            if "raw_text" not in columns:
+                connection.execute("ALTER TABLE content_evidence ADD COLUMN raw_text TEXT NOT NULL DEFAULT ''")
             migration_name = "legacy_feedback_removed_v2"
             migrated = connection.execute(
                 "SELECT 1 FROM local_schema_migrations WHERE name=?", (migration_name,),

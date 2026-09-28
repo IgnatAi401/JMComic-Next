@@ -19,7 +19,7 @@ export class RatingEditor {
             <div class="rating-tags"><h3 class="field-label">标签偏好</h3><p class="picker-note">点击依次切换：未表态 → 喜欢 → 软回避 → 硬屏蔽。总评分不会自动应用到标签。</p><div class="tag-feedback-list chip-row"></div></div>
             <label class="field"><span class="field-label">评语</span><textarea class="input" rows="4" maxlength="5000" placeholder="哪些地方打动了你，或影响了阅读体验？"></textarea></label>
             <div class="page-actions"><button class="btn btn-primary" type="button" data-save-rating>保存评价</button><button class="btn btn-ghost" type="button" data-clear-rating>清除评价</button></div><p class="status-line" data-rating-status role="status">正在读取评价…</p>
-            <section class="panel" data-rating-summary><h3>LLM 语义评价</h3><p class="picker-note">保存评分或更新评语后，会将评分、评语及作品资料发送到已配置的语言模型，每次更新最多调用一次。</p><p data-summary-status role="status"></p><div data-summary-text style="white-space:pre-wrap;overflow-wrap:anywhere"></div></section>`;
+            <section class="panel" data-rating-summary><h3>LLM 内容分析</h3><p class="picker-note">保存评分或更新评语后，会将评语及作品资料发送到已配置的语言模型，每次更新最多调用一次，分析结果用于推荐排序。</p><p data-summary-status role="status"></p><div data-summary-text style="white-space:pre-wrap;overflow-wrap:anywhere"></div></section>`;
         this.root.addEventListener("click", (event) => {
             if (this.saving || this.loadFailed) return;
             const score = event.target.closest("[data-score]");
@@ -47,7 +47,7 @@ export class RatingEditor {
             const result = await localRuntime.getLocalComic(this.album.id);
             this.loadFailed = false;
             this.apply(result?.comic);
-            this.watchSemantics(result.rating_semantics);
+            this.watchAnalysis(result.content_analysis);
             this.status("评价保存在本地资料库");
         } catch (error) {
             this.loadFailed = true;
@@ -84,24 +84,24 @@ export class RatingEditor {
     }
 
     status(message) { this.root.querySelector("[data-rating-status]").textContent = message; }
-    watchSemantics(state) {
+    watchAnalysis(state) {
         clearTimeout(this.summaryTimer);
         const revision = this.summaryRevision = (this.summaryRevision || 0) + 1;
         const render = (value) => {
-            const labels = { unrated: "保存总评分后生成语义评价", unconfigured: "请先在设置中配置语言模型，再点击补全语义评价", missing: "尚未生成，可在设置中统一补全", stale: "评分或评语已更新，旧总结待重新生成", queued: "已保存评价，正在等待 LLM 总结", running: "LLM 正在总结，离开页面也会继续", ready: "语义评价已更新", error: "语义评价失败，可在设置中重试；评分和评语不受影响" };
-            this.root.querySelector("[data-summary-status]").textContent = labels[value?.status] || "尚未生成语义评价";
+            const labels = { unrated: "保存总评分后生成内容分析", unconfigured: "请先在设置中配置语言模型，再点击补全内容分析", missing: "尚未生成，可在设置中统一补全", stale: "评分或评语已更新，旧分析待重新生成", queued: "已保存评价，正在等待 LLM 分析", running: "LLM 正在分析，离开页面也会继续", ready: "内容分析已更新", error: "内容分析失败，可在设置中重试；评分和评语不受影响" };
+            this.root.querySelector("[data-summary-status]").textContent = labels[value?.status] || "尚未生成内容分析";
             const text = value?.text || "";
-            this.root.querySelector("[data-summary-text]").textContent = text ? `${value.current ? "" : "上次总结（尚未对应最新评价）：\n"}${text}` : "";
+            this.root.querySelector("[data-summary-text]").textContent = text ? `${value.current ? "" : "上次分析（尚未对应最新评价）：\n"}${text}` : "";
         };
         const poll = async () => {
             if (revision !== this.summaryRevision || !this.root.isConnected) return;
             try {
-                const value = await localRuntime.getRatingSemantics(this.album.id);
+                const value = await localRuntime.getContentAnalysis(this.album.id);
                 if (revision !== this.summaryRevision || !this.root.isConnected) return;
                 render(value);
                 if (["queued", "running"].includes(value.status)) this.summaryTimer = setTimeout(poll, 1500);
             } catch {
-                if (revision === this.summaryRevision) this.root.querySelector("[data-summary-status]").textContent = "总结状态读取失败，可重新打开作品或到设置查看；评分已保留。";
+                if (revision === this.summaryRevision) this.root.querySelector("[data-summary-status]").textContent = "分析状态读取失败，可重新打开作品或到设置查看；评分已保留。";
             }
         };
         render(state);
@@ -120,7 +120,7 @@ export class RatingEditor {
         try {
             const result = await localRuntime.saveLocalComic({ ...comicPayload(this.album, jmApi.getCoverImageURL(this.album.id)), rating: clear ? null : this.score, review: clear ? "" : this.root.querySelector("textarea").value.trim(), tag_feedback: clear ? {} : { ...this.tagFeedback } });
             this.apply(result.comic);
-            this.watchSemantics(result.rating_semantics);
+            this.watchAnalysis(result.content_analysis);
             this.status("已保存到本地资料库");
             window.dispatchEvent(new CustomEvent("jm-library-change"));
             showToast(clear ? "评价已清除" : "评价已保存", "success");

@@ -5,7 +5,7 @@ import math
 from collections import Counter
 
 ENGINE = "personal-content-v2"
-CONTENT_VERSION = "content-evidence-v1"
+CONTENT_VERSION = "content-evidence-v2"
 DIMENSIONS = {
     "mechanism": "具体设定",
     "rule_scope": "规则改变范围",

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -25,7 +26,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from local_features import LocalFeatureError, LocalFeatureStore
 from qwen_embeddings import QwenEmbeddingError, QwenEmbeddingRuntime
-from rating_semantics import RatingSemantics
+from content_analysis import ContentAnalysis
+from recommendation_jobs import RecommendationJobs
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -35,7 +37,8 @@ CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
 ACCOUNT_FILE = DATA_DIR / "account.json"
 local_features = LocalFeatureStore(DATA_DIR)
 embedding_runtime = QwenEmbeddingRuntime(local_features)
-rating_semantics = RatingSemantics(local_features)
+content_analysis = ContentAnalysis(local_features)
+recommendation_jobs = RecommendationJobs(local_features)
 
 CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications"}
 CACHE_KEY = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -508,6 +511,14 @@ class LocalHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PROJECT_DIR), **kwargs)
 
+    def send_head(self):
+        # Task sources/results must never be served as static files (GET or HEAD).
+        target = Path(self.translate_path(self.path)).resolve()
+        if target.name.startswith("recommendation_jobs.sqlite3"):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+        return super().send_head()
+
     def end_headers(self) -> None:
         if self.path.startswith("/local-api/"):
             self.send_header("Cache-Control", "no-store")
@@ -518,6 +529,15 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/local-api/ai/recommendation-jobs":
+            key = parse_qs(parsed.query).get("id", [None])[0]
+            try:
+                job = recommendation_jobs.get(key)
+                self.send_json(job if job is not None else {"error": "任务不存在"},
+                               status=HTTPStatus.OK if job is not None else HTTPStatus.NOT_FOUND)
+            except (OSError, sqlite3.Error):
+                self.send_json({"error": "任务存储暂不可用，请保留浏览器缓存并重试"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if parsed.path == "/local-api/library/history":
             kind = parse_qs(parsed.query).get("kind", [""])[0]
             try:
@@ -556,14 +576,14 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/library/comic":
             try:
                 comic = local_features.get_comic(parse_qs(parsed.query).get("id", [""])[0])
-                self.send_json({"comic": comic, "rating_semantics": rating_semantics.get(comic["id"]) if comic else None})
+                self.send_json({"comic": comic, "content_analysis": content_analysis.get(comic["id"]) if comic else None})
             except LocalFeatureError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
-        if parsed.path == "/local-api/ai/rating-semantics":
+        if parsed.path == "/local-api/ai/content-analysis":
             try:
                 comic_id = parse_qs(parsed.query).get("id", [None])[0]
-                self.send_json(rating_semantics.get(comic_id) if comic_id else rating_semantics.overview())
+                self.send_json(content_analysis.get(comic_id) if comic_id else content_analysis.overview())
             except (LocalFeatureError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -637,6 +657,23 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/local-api/ai/recommendation-jobs", "/local-api/ai/recommendation-jobs/source", "/local-api/ai/recommendation-jobs/cancel"}:
+            body = self.read_json_body()
+            if body is None:
+                return
+            try:
+                if parsed.path.endswith("/source"):
+                    result = recommendation_jobs.upload(body.get("id"), body.get("source", {}))
+                elif parsed.path.endswith("/cancel"):
+                    result = recommendation_jobs.cancel(body.get("id"))
+                else:
+                    result = recommendation_jobs.submit(body)
+                self.send_json(result)
+            except (OSError, sqlite3.Error):
+                self.send_json({"error": "任务尚未确认保存，请保留浏览器缓存并重试"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            except (ValueError, TypeError, AttributeError) as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/local-api/library/history":
             kind = parse_qs(parsed.query).get("kind", [""])[0]
             body = self.read_json_body()
@@ -729,20 +766,20 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 if comic_has_explicit_embedding_evidence(comic):
                     embedding_runtime.enqueue_background(comic)
                 try:
-                    semantics = (rating_semantics.enqueue(comic["id"]) if "rating" in body or "review" in body
-                                 else rating_semantics.get(comic["id"]))
+                    analysis = (content_analysis.enqueue(comic["id"]) if "rating" in body or "review" in body
+                                 else content_analysis.get(comic["id"]))
                 except Exception:
-                    semantics = {"status": "error", "text": "", "current": False,
-                                 "error": "评价已保存，语义评价未启动，请在设置中重试。"}
-                self.send_json({"comic": comic, "rating_semantics": semantics})
+                    analysis = {"status": "error", "text": "", "current": False,
+                                 "error": "评价已保存，内容分析未启动，请在设置中重试。"}
+                self.send_json({"comic": comic, "content_analysis": analysis})
             except LocalFeatureError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
-        if parsed.path == "/local-api/ai/rating-semantics/update":
+        if parsed.path == "/local-api/ai/content-analysis/update":
             if self.read_json_body() is None:
                 return
             try:
-                self.send_json(rating_semantics.update_missing())
+                self.send_json(content_analysis.update_missing())
             except (LocalFeatureError, ValueError) as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1007,7 +1044,7 @@ def main() -> None:
         pass
     finally:
         embedding_runtime.stop()
-        rating_semantics.stop()
+        content_analysis.stop()
         server.server_close()
 
 

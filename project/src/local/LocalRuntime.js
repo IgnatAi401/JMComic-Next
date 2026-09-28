@@ -19,7 +19,11 @@ class LocalRuntime {
                 if (response.ok) throw new Error("本地服务返回了无效数据，请稍后重试");
                 data = {};
             }
-            if (!response.ok) throw new Error(data.error || `本地服务错误 ${response.status}`);
+            if (!response.ok) {
+                const error = new Error(data.error || `本地服务错误 ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
             return data;
         } catch (error) {
             if (error?.name === "AbortError") throw new Error("本地服务响应超时");
@@ -87,12 +91,12 @@ class LocalRuntime {
         return this.request("./local-api/library/comic", { method: "POST", body: comic });
     }
 
-    getRatingSemantics(id = "") {
-        return this.request(`./local-api/ai/rating-semantics${id ? `?id=${encodeURIComponent(id)}` : ""}`);
+    getContentAnalysis(id = "") {
+        return this.request(`./local-api/ai/content-analysis${id ? `?id=${encodeURIComponent(id)}` : ""}`);
     }
 
-    updateRatingSemantics() {
-        return this.request("./local-api/ai/rating-semantics/update", { method: "POST", body: {}, timeoutMs: 30000 });
+    updateContentAnalysis() {
+        return this.request("./local-api/ai/content-analysis/update", { method: "POST", body: {}, timeoutMs: 30000 });
     }
 
     getLocalComics(mode = "all") {
@@ -143,6 +147,20 @@ class LocalRuntime {
 
     clearEmbeddingConfig() {
         return this.request("./local-api/ai/embeddings/config", { method: "DELETE" });
+    }
+
+    getRecommendationJobs() { return this.request("./local-api/ai/recommendation-jobs"); }
+    getRecommendationJob(id) {
+        return this.request(`./local-api/ai/recommendation-jobs?id=${encodeURIComponent(id)}`, { timeoutMs: 15000 });
+    }
+    submitRecommendationJob(value) {
+        return this.request("./local-api/ai/recommendation-jobs", { method: "POST", body: value, timeoutMs: 15000 });
+    }
+    uploadRecommendationSource(id, source) {
+        return this.request("./local-api/ai/recommendation-jobs/source", { method: "POST", body: { id, source }, timeoutMs: 15000 });
+    }
+    cancelRecommendationJob(id) {
+        return this.request("./local-api/ai/recommendation-jobs/cancel", { method: "POST", body: { id }, timeoutMs: 15000 });
     }
 
     generateRecommendations(value) {

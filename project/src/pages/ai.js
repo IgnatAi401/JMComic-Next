@@ -2,7 +2,7 @@ import { mountShell } from "../ui/shell.js";
 import { hydrateCovers, coverHtml } from "../ui/covers.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { isSingleChapterComic, keepSingleChapterComics } from "../utils/ComicChapterFilter.js";
-import { prepareContent } from "../local/ContentPreparation.js";
+import { RecommendationTask } from "../local/RecommendationTask.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { reconcileListingFilters } from "../utils/ListingFilters.js";
 import { showToast } from "../ui/toast.js";
@@ -44,9 +44,12 @@ class AiPage {
         mountShell();
         this.form = document.querySelector(".recommend-form");
         this.categories = [];
+        this.task = new RecommendationTask({ runtime: localRuntime, api: jmApi,
+            progress: text => { document.querySelector(".recommend-state").textContent = text; } });
         this.bindEvents();
+        this.restoreRecommendationTask();
         await Promise.all([
-            jmApi.init(),
+            jmApi.init().catch(error => showToast(`漫画接口暂不可用：${error.message}`, "warning")),
             this.loadProfile(),
             this.loadHistory(),
             this.loadCategories().catch((error) => showToast(`分类暂时不可用：${error.message}`, "warning")),
@@ -54,19 +57,41 @@ class AiPage {
         ]);
     }
 
+    async restoreRecommendationTask() {
+        if (this.generating) return;
+        this.generating = true;
+        document.querySelector(".generate-recommendations").disabled = true;
+        try {
+            if (await this.task.retry(() => this.task.restore())) {
+                await this.generateRecommendations(true);
+            }
+        } catch (error) {
+            document.querySelector(".recommend-state").textContent = `任务恢复失败：${error.message}；缓存保留，刷新可重试。`;
+        } finally {
+            this.generating = false;
+            document.querySelector(".generate-recommendations").disabled = false;
+        }
+    }
+
     async loadRecommendationStatus() {
         const state = document.querySelector(".recommend-state");
         try {
             const config = await localRuntime.getAiConfig();
+            if (this.generating || this.task.record) return;
             state.textContent = config.configured
                 ? "内容证据增强已就绪 · 以7分为喜欢门槛"
                 : "以7分为喜欢门槛 · 配置语言模型后可提取标题和评论证据";
-        } catch (error) { state.textContent = error.message; }
+        } catch (error) {
+            if (!this.generating && !this.task.record) state.textContent = error.message;
+        }
     }
 
     bindEvents() {
         document.querySelector(".cancel-recommendations").addEventListener("click", () => {
             this.stopRequested = true;
+            if (this.taskActive) {
+                try { this.task.cancel(); } catch (error) { showToast(error.message, "warning"); }
+            }
             document.querySelector(".recommend-state").textContent = "正在停止；已发出的请求结束后不再继续，已缓存证据保留。";
         });
         document.querySelector(".generate-profile").addEventListener("click", () => this.generateProfile());
@@ -401,8 +426,8 @@ class AiPage {
         };
     }
 
-    async generateRecommendations() {
-        if (this.generating) return;
+    async generateRecommendations(resuming = false) {
+        if (this.generating && !resuming) return;
         this.generating = true;
         this.stopRequested = false;
         const button = document.querySelector(".generate-recommendations");
@@ -415,25 +440,30 @@ class AiPage {
         cancel.hidden = false;
         cancel.disabled = false;
         try {
-            const collected = await this.collectCandidates(target, state);
-            if (this.stopRequested) return;
-            const preparation = await prepareContent({
-                runtime: localRuntime, api: jmApi, candidates: collected.candidates,
-                budget: Number(this.form.elements.content_budget.value) || 0,
-                stopped: () => this.stopRequested,
-                progress: ({ finished, total, failed }) => {
-                    if (!this.stopRequested) state.textContent = `正在提取内容证据 · ${finished}/${total}${failed ? ` · ${failed} 本暂不可用` : ""}`;
-                },
-            });
-            if (this.stopRequested) return;
-            state.textContent = "正在根据历史评分和可用内容证据排序…";
-            const result = await localRuntime.generateRecommendations({
-                ...collected,
-                limit: this.form.elements.limit_all.checked
-                    ? "all"
-                    : Math.min(100, Math.max(1, Number(this.form.elements.limit.value) || 10)),
-            });
-            if (this.stopRequested) return;
+            if (!resuming) {
+                const previous = this.task.pending() || this.task.read();
+                const previousJob = previous && !previous.payload
+                    ? await this.task.retry(() => localRuntime.getRecommendationJob(previous.id)) : null;
+                if (previous?.payload || (previousJob && !["success", "failed", "cancelled", "interrupted"].includes(previousJob.status))) {
+                    this.task.record = previous;
+                } else {
+                    const collected = await this.collectCandidates(target, state);
+                    if (this.stopRequested) return;
+                    this.task.create({ ...collected,
+                        budget: Math.min(500, Math.max(0, Number(this.form.elements.content_budget.value) || 0)),
+                        limit: this.form.elements.limit_all.checked ? "all"
+                            : Math.min(100, Math.max(1, Number(this.form.elements.limit.value) || 10)),
+                    });
+                }
+            }
+            this.taskActive = true;
+            const job = await this.task.run();
+            if (job.status !== "success") {
+                state.textContent = job.error || "任务已停止，候选和已完成的证据保留。";
+                return;
+            }
+            const result = job.result;
+            const preparation = job;
             const blocked = Number(result.blocked_by_preferences) || 0;
             state.textContent = `完成 · 推荐 ${result.recommendations.length} 本 · 新增证据 ${preparation.prepared} 本${preparation.failed ? ` · 提取失败 ${preparation.failed} 本` : ""}${preparation.remaining ? ` · 尚有 ${preparation.remaining} 本待补充` : ""}${blocked ? ` · 屏蔽 ${blocked} 本` : ""}`;
             this.renderResults(result.recommendations, `本次推荐 #${result.id}`, result.id);
@@ -441,9 +471,10 @@ class AiPage {
             showToast("推荐已生成并留档", "success");
         } catch (error) {
             state.textContent = error.message || "推荐生成失败";
-            await this.loadHistory();
+            await this.loadHistory().catch(() => {});
         } finally {
-            if (this.stopRequested) state.textContent = "已停止，已完成的内容证据留在缓存中。";
+            if (this.stopRequested && !this.taskActive) state.textContent = "已停止初筛。";
+            this.taskActive = false;
             cancel.hidden = true;
             this.generating = false;
             controls.forEach(([control, disabled]) => { control.disabled = disabled; });
@@ -473,7 +504,7 @@ class AiPage {
             const reason = item.reason;
             return `<article class="ai-result-item" data-recommendation-card="${escapeHtml(item.id)}" data-run-id="${escapeHtml(runId ?? "")}" data-position="${index + 1}" data-recommendation-source="${escapeHtml(source)}">
             ${coverHtml(item, { href: `./chapter.html?id=${encodeURIComponent(item.id)}` }).replace('class="cover"', 'class="cover" data-recommendation-open')}
-            <div class="ai-result-copy"><small>${escapeHtml(metadata.join(" · "))}</small><h3><a data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}">${escapeHtml(item.title)}</a></h3><p>${escapeHtml(reason)}</p>${this.renderScoreBreakdown(item.score_breakdown)}${item.evidence.length ? `<details class="score-breakdown"><summary>内容证据 · ${item.evidence.length} 项</summary>${item.evidence.map(e => `<p><strong>${escapeHtml(e.label)}</strong>（${e.source.startsWith("comment:") ? "读者评论" : "作品资料"}）：${escapeHtml(e.quote)}</p>`).join("")}</details>` : ""}${asList(item.tags).length ? `<div class="ai-result-tags">${asList(item.tags).slice(0, 8).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div>
+            <div class="ai-result-copy"><small>${escapeHtml(metadata.join(" · "))}</small><h3><a data-recommendation-open href="./chapter.html?id=${encodeURIComponent(item.id)}">${escapeHtml(item.title)}</a></h3><p>${escapeHtml(reason)}</p>${this.renderScoreBreakdown(item.score_breakdown)}${item.evidence.length ? `<details class="score-breakdown"><summary>内容证据 · ${item.evidence.length} 项</summary>${item.evidence.map(e => `<p><strong>${escapeHtml(e.label)}</strong>（${e.source === "user_review" ? "你的评语" : e.source.startsWith("comment:") ? "读者评论" : "作品资料"}）：${escapeHtml(e.quote)}</p>`).join("")}</details>` : ""}${asList(item.tags).length ? `<div class="ai-result-tags">${asList(item.tags).slice(0, 8).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div>
         </article>`;
         }).join("");
         hydrateCovers(root);
