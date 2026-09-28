@@ -17,6 +17,7 @@ class JmcomicApi {
     favoriteIds = null;
     favoriteSnapshotPromise = null;
     dailyCheckInPromise = null;
+    dailyCheckInUserId = "";
     albumMemoryLimit = 500;
     chapterMemoryLimit = 120;
     bootstrapFromCache = false;
@@ -166,7 +167,10 @@ class JmcomicApi {
                 if (response.ok) throw new Error("当前 API 线路返回了无效数据");
                 payload = {};
             }
-            if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+            if (!response.ok) {
+                const detail = payload?.error || payload?.msg || payload?.message;
+                throw new Error(`HTTP ${response.status}${typeof detail === "string" ? `：${detail}` : ""}`);
+            }
             return { response, payload };
         };
 
@@ -593,9 +597,14 @@ class JmcomicApi {
     async dailyCheckIn(userId) {
         const uid = String(userId ?? "").trim();
         if (!/^\d+$/.test(uid)) throw new Error("账号 ID 无效");
-        if (this.dailyCheckInPromise) return this.dailyCheckInPromise;
+        if (this.dailyCheckInPromise) {
+            if (this.dailyCheckInUserId !== uid) throw new Error("另一个账号正在签到，请等待完成后重试");
+            return this.dailyCheckInPromise;
+        }
+        this.dailyCheckInUserId = uid;
         this.dailyCheckInPromise = this.#performDailyCheckIn(uid).finally(() => {
             this.dailyCheckInPromise = null;
+            this.dailyCheckInUserId = "";
         });
         return this.dailyCheckInPromise;
     }
@@ -618,40 +627,68 @@ class JmcomicApi {
         return { ...result, dailyId };
     }
 
+    #dailyMessage(value) {
+        if (typeof value === "string") return value.trim();
+        return [value?.msg, value?.message, value?.error]
+            .filter((item) => typeof item === "string" && item.trim())
+            .map((item) => item.trim()).join("；");
+    }
+
+    #dailyErrorDetail(error) {
+        if (error?.name === "AbortError" || /timeout|timed out/i.test(error?.message || "")) return "请求超时";
+        if (/failed to fetch|load failed|networkerror/i.test(error?.message || "")) return "网络连接中断，请检查网络和本地服务";
+        if (/decryption failed/i.test(error?.message || "")) return "无法解密签到接口响应";
+        return error?.message || "未收到有效响应";
+    }
+
     async #performDailyCheckIn(uid) {
-        const daily = await this.getDailyCheckInStatus(uid);
-        const { result, payload } = await this.#requestApi("/daily_chk", {
-            method: "POST",
-            data: { user_id: uid, daily_id: daily.dailyId },
-            authenticated: true,
-        });
-        this.#assertDailyCheckInEnvelope(payload);
-
-        const status = String(result?.status ?? "").toLowerCase();
-        const message = String(result?.msg ?? result?.message ?? (typeof result === "string" ? result : "")).trim();
-        const successStatus = ["success", "ok", "1", "true"].includes(status);
-        const failedStatus = status && !successStatus;
-        const successMessage = /签到成功|簽到成功|\[\s*EXP\s*:\s*\d+\s*\]|check[ -]?in\s+(?:succeeded|successful)/i.test(message);
-        const failedMessage = /失败|失敗|错误|錯誤|异常|異常|未登录|未登入|请先|請先|无法|無法/.test(message)
-            || (!successMessage && /已(?:经)?签到|已簽到|签到过|簽到過|重复签到|重複簽到/.test(message));
-        if (failedStatus || failedMessage) {
-            throw new Error(message || "签到失败，请稍后重试");
+        let daily;
+        try {
+            daily = await this.getDailyCheckInStatus(uid);
+        } catch (error) {
+            throw new Error(`读取签到活动失败，尚未提交签到：${this.#dailyErrorDetail(error)}`);
         }
-        if (!successStatus && !successMessage) {
-            throw new Error(message ? `无法确认签到成功：${message}` : "签到响应异常，未确认成功");
+        let response;
+        try {
+            response = await this.#requestApi("/daily_chk", {
+                method: "POST",
+                data: { user_id: uid, daily_id: daily.dailyId },
+                authenticated: true,
+            });
+        } catch (error) {
+            // A lost response does not imply that the server rejected the write.
+            // Never automatically repeat this POST after an ambiguous failure.
+            throw new Error(`签到结果未确认：${this.#dailyErrorDetail(error)}。请求可能已生效，请稍后再次签到确认。`);
         }
-
+        const { result, payload } = response;
+        const message = [...new Set([this.#dailyMessage(result), this.#dailyMessage(payload)].filter(Boolean))].join("；");
+        const status = String(result?.status ?? "").trim().toLowerCase();
+        const successStatus = ["success", "ok", "1", "true", "200"].includes(status);
+        const failedStatus = ["fail", "failed", "failure", "error", "0", "false"].includes(status) || /^[45]\d\d$/.test(status);
+        const failedCode = [payload?.code, result?.code].some((code) => code != null && Number(code) !== 200);
+        const failedMessage = /失败|失敗|错误|錯誤|异常|異常|未登录|未登入|请先|請先|无法|無法|尚未|未能|没有|沒有|未成功|未签到|未簽到|不成功|not\s+(?:successful|checked)|fail(?:ed|ure)?|error|denied/i.test(message);
+        const already = /已(?:经|經)?(?:完成)?[签簽]到|[签簽]到[过過]|[重複复]{2}[签簽]到|already\s+checked[ -]?in/i.test(message);
+        if (already && !failedMessage) {
+            return { status: "already", message: `今天已签到，无需重复提交${message ? `：${message}` : ""}` };
+        }
+        if (failedStatus || failedCode || failedMessage || this.#dailyMessage(result?.error) || this.#dailyMessage(payload?.error)) {
+            throw new Error(`签到接口返回失败：${message || `状态 ${status || result?.code || payload?.code}`}`);
+        }
+        // Reward hints alone can occur in explanatory/failure responses.
+        const successMessage = /签到成功|簽到成功|check[ -]?in\s+(?:succeeded|successful)/i.test(message);
+        if ((!successStatus && !successMessage) || (status && !successStatus)) {
+            throw new Error(`签到响应异常，未确认成功${message ? `：${message}` : ""}${status ? `（状态 ${status}）` : ""}。请稍后再次签到确认。`);
+        }
         const localizedMessage = message
             .replace(/\[\s*EXP\s*:\s*(\d+)\s*\]/gi, "获得 $1 经验")
             .replace(/\[\s*COIN\s*:\s*(\d+)\s*\]/gi, "获得 $1 金币");
-        return { message: localizedMessage || "签到成功" };
+        return { status: "success", message: localizedMessage || "签到成功" };
     }
 
     #assertDailyCheckInEnvelope(payload) {
         if (!payload || typeof payload !== "object" || payload.code == null) return;
         if (Number(payload.code) === 200) return;
-        const message = String(payload.msg ?? payload.message ?? payload.error ?? "签到接口返回失败").trim();
-        throw new Error(message || "签到接口返回失败");
+        throw new Error(`签到接口状态 ${payload.code}：${this.#dailyMessage(payload) || "接口未提供原因"}`);
     }
 
     async getNotifications() {

@@ -87,6 +87,14 @@ class LocalRuntime {
         return this.request("./local-api/library/comic", { method: "POST", body: comic });
     }
 
+    getRatingSemantics(id = "") {
+        return this.request(`./local-api/ai/rating-semantics${id ? `?id=${encodeURIComponent(id)}` : ""}`);
+    }
+
+    updateRatingSemantics() {
+        return this.request("./local-api/ai/rating-semantics/update", { method: "POST", body: {}, timeoutMs: 30000 });
+    }
+
     getLocalComics(mode = "all") {
         return this.request(`./local-api/library/comics?mode=${encodeURIComponent(mode)}`);
     }
@@ -139,8 +147,16 @@ class LocalRuntime {
 
     generateRecommendations(value) {
         return this.request("./local-api/ai/recommendations/generate", {
-            method: "POST", body: value, timeoutMs: 30 * 60 * 1000,
+            method: "POST", body: value, timeoutMs: 130000,
         });
+    }
+
+    planContent(candidates) {
+        return this.request("./local-api/ai/content/plan", { method: "POST", body: { candidates } });
+    }
+
+    prepareContent(value) {
+        return this.request("./local-api/ai/content/prepare", { method: "POST", body: value, timeoutMs: 130000 });
     }
 
     saveRecommendationFeedback(value) {

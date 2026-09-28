@@ -115,7 +115,6 @@ class FrontendStabilityTests(unittest.TestCase):
 
     def test_checkin_requires_an_explicit_success_response(self):
         api = (SOURCE_DIR / "api" / "JmcomicApi.js").read_text(encoding="utf-8")
-        self.assertIn('const message = String(result?.msg ?? result?.message ?? (typeof result === "string" ? result : "")).trim()', api)
         self.assertIn("签到响应异常，未确认成功", api)
         self.assertIn("获得 $1 经验", api)
 

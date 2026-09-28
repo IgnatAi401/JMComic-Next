@@ -18,7 +18,8 @@ export class RatingEditor {
             <details class="disclosure rating-rules"><summary>评分参考</summary><ul><li>1–2 分：垃圾作品，看了浪费时间</li><li>3–4 分：有严重雷点</li><li>5–6 分：中规中矩</li><li>7–8 分：整体及格且有亮点</li><li>9–10 分：全方面优秀</li></ul></details>
             <div class="rating-tags"><h3 class="field-label">标签偏好</h3><p class="picker-note">点击依次切换：未表态 → 喜欢 → 软回避 → 硬屏蔽。总评分不会自动应用到标签。</p><div class="tag-feedback-list chip-row"></div></div>
             <label class="field"><span class="field-label">评语</span><textarea class="input" rows="4" maxlength="5000" placeholder="哪些地方打动了你，或影响了阅读体验？"></textarea></label>
-            <div class="page-actions"><button class="btn btn-primary" type="button" data-save-rating>保存评价</button><button class="btn btn-ghost" type="button" data-clear-rating>清除评价</button></div><p class="status-line" data-rating-status role="status">正在读取评价…</p>`;
+            <div class="page-actions"><button class="btn btn-primary" type="button" data-save-rating>保存评价</button><button class="btn btn-ghost" type="button" data-clear-rating>清除评价</button></div><p class="status-line" data-rating-status role="status">正在读取评价…</p>
+            <section class="panel" data-rating-summary><h3>LLM 语义评价</h3><p class="picker-note">保存评分或更新评语后，会将评分、评语及作品资料发送到已配置的语言模型，每次更新最多调用一次。</p><p data-summary-status role="status"></p><div data-summary-text style="white-space:pre-wrap;overflow-wrap:anywhere"></div></section>`;
         this.root.addEventListener("click", (event) => {
             if (this.saving || this.loadFailed) return;
             const score = event.target.closest("[data-score]");
@@ -46,6 +47,7 @@ export class RatingEditor {
             const result = await localRuntime.getLocalComic(this.album.id);
             this.loadFailed = false;
             this.apply(result?.comic);
+            this.watchSemantics(result.rating_semantics);
             this.status("评价保存在本地资料库");
         } catch (error) {
             this.loadFailed = true;
@@ -82,6 +84,29 @@ export class RatingEditor {
     }
 
     status(message) { this.root.querySelector("[data-rating-status]").textContent = message; }
+    watchSemantics(state) {
+        clearTimeout(this.summaryTimer);
+        const revision = this.summaryRevision = (this.summaryRevision || 0) + 1;
+        const render = (value) => {
+            const labels = { unrated: "保存总评分后生成语义评价", unconfigured: "请先在设置中配置语言模型，再点击补全语义评价", missing: "尚未生成，可在设置中统一补全", stale: "评分或评语已更新，旧总结待重新生成", queued: "已保存评价，正在等待 LLM 总结", running: "LLM 正在总结，离开页面也会继续", ready: "语义评价已更新", error: "语义评价失败，可在设置中重试；评分和评语不受影响" };
+            this.root.querySelector("[data-summary-status]").textContent = labels[value?.status] || "尚未生成语义评价";
+            const text = value?.text || "";
+            this.root.querySelector("[data-summary-text]").textContent = text ? `${value.current ? "" : "上次总结（尚未对应最新评价）：\n"}${text}` : "";
+        };
+        const poll = async () => {
+            if (revision !== this.summaryRevision || !this.root.isConnected) return;
+            try {
+                const value = await localRuntime.getRatingSemantics(this.album.id);
+                if (revision !== this.summaryRevision || !this.root.isConnected) return;
+                render(value);
+                if (["queued", "running"].includes(value.status)) this.summaryTimer = setTimeout(poll, 1500);
+            } catch {
+                if (revision === this.summaryRevision) this.root.querySelector("[data-summary-status]").textContent = "总结状态读取失败，可重新打开作品或到设置查看；评分已保留。";
+            }
+        };
+        render(state);
+        if (["queued", "running"].includes(state?.status)) this.summaryTimer = setTimeout(poll, 1500);
+    }
     setBusy(busy) {
         this.root.setAttribute("aria-busy", String(busy));
         this.root.querySelectorAll("button, textarea").forEach((el) => { el.disabled = busy || (this.loadFailed && !el.dataset.retryRating); });
@@ -90,9 +115,12 @@ export class RatingEditor {
     async save(clear = false) {
         if (this.saving || this.loadFailed) return;
         this.saving = true; this.setBusy(true);
+        clearTimeout(this.summaryTimer);
+        this.summaryRevision = (this.summaryRevision || 0) + 1;
         try {
             const result = await localRuntime.saveLocalComic({ ...comicPayload(this.album, jmApi.getCoverImageURL(this.album.id)), rating: clear ? null : this.score, review: clear ? "" : this.root.querySelector("textarea").value.trim(), tag_feedback: clear ? {} : { ...this.tagFeedback } });
             this.apply(result.comic);
+            this.watchSemantics(result.rating_semantics);
             this.status("已保存到本地资料库");
             window.dispatchEvent(new CustomEvent("jm-library-change"));
             showToast(clear ? "评价已清除" : "评价已保存", "success");

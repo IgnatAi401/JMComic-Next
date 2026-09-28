@@ -19,6 +19,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from content_evidence import ContentEvidence
+from recommender import ENGINE, DIMENSIONS, PreferenceModel, feedback_adjustment, rating_outcome
+
 
 class LocalFeatureError(RuntimeError):
     pass
@@ -28,7 +31,6 @@ class AIEmptyContentError(LocalFeatureError):
     pass
 
 
-PREFERENCE_HEADS = ("interest", "overall")
 INTEREST_REASONS = ("overall", "cover", "title", "tag_mix", "author")
 FEATURE_MODALITIES = ("cover", "title", "joint")
 DEFAULT_EMBEDDING_API_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
@@ -285,9 +287,7 @@ class LocalFeatureStore:
                     created_at INTEGER NOT NULL,
                     model TEXT NOT NULL DEFAULT '',
                     request_json TEXT NOT NULL,
-                    candidates_json TEXT NOT NULL,
                     result_json TEXT,
-                    raw_output_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     error TEXT NOT NULL DEFAULT ''
                 );
@@ -361,6 +361,18 @@ class LocalFeatureStore:
                 );
                 CREATE INDEX IF NOT EXISTS item_feature_cache_status_idx
                     ON item_feature_cache(modality, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS content_evidence (
+                    comic_id TEXT PRIMARY KEY, source_json TEXT NOT NULL,
+                    source_hash TEXT NOT NULL, extractor TEXT NOT NULL,
+                    assertions_json TEXT NOT NULL, status TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS rating_semantics (
+                    comic_id TEXT PRIMARY KEY REFERENCES comics(id) ON DELETE CASCADE,
+                    input_hash TEXT NOT NULL, status TEXT NOT NULL,
+                    text TEXT NOT NULL, model TEXT NOT NULL,
+                    error TEXT NOT NULL, updated_at INTEGER NOT NULL
+                );
                 """
             )
             migration_name = "legacy_feedback_removed_v2"
@@ -440,6 +452,19 @@ class LocalFeatureStore:
                     "INSERT INTO local_schema_migrations(name,applied_at) VALUES(?,?)",
                     (migration_name, int(time.time())),
                 )
+            # Retire disposable results once; ON DELETE SET NULL preserves
+            # explicit feedback and interaction records referring to old runs.
+            migration = "personal_content_v2_results"
+            if not connection.execute("SELECT 1 FROM local_schema_migrations WHERE name=?", (migration,)).fetchone():
+                connection.execute("DELETE FROM recommendation_runs")
+                connection.execute("DROP TABLE recommendation_runs")
+                connection.execute("""CREATE TABLE recommendation_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT,
+                    status TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+                )""")
+                connection.execute("INSERT INTO local_schema_migrations VALUES(?,?)", (migration, int(time.time())))
+                self.profile_path.unlink(missing_ok=True)
         try:
             self.database_path.chmod(0o600)
         except OSError:
@@ -1417,9 +1442,7 @@ class LocalFeatureStore:
     def _item_outcome(item: dict) -> float | None:
         rating = item.get("rating")
         if rating is not None:
-            return max(-1.0, min(1.0, (float(rating) - 5.5) / 4.5))
-        if item.get("favorite"):
-            return 0.15
+            return rating_outcome(float(rating))
         return None
 
     @staticmethod
@@ -1646,7 +1669,7 @@ class LocalFeatureStore:
                 f"已有 {len(ratings)} 次总体评分，平均 {sum(ratings) / len(ratings):.1f}/10。"
                 if ratings else "总体评分证据仍不足。"
             ),
-            "recommendation_guidance": "排序以作品总评分为核心，并结合标签、作者、行为反馈和可用 embedding；画像文字不参与权威评分。",
+            "recommendation_guidance": "7分是喜欢门槛；6分是未达门槛的对照，不是讨厌。内容证据与历史评分决定排序，历史阅读行为不训练偏好，画像文字不参与评分。",
             "explicit_review_tag_signals": [],
         }
         config = self.read_ai_config()
@@ -1747,383 +1770,34 @@ class LocalFeatureStore:
         excluded.update(row["id"] for row in rows)
         return sorted(excluded, key=lambda value: int(value) if value.isdigit() else value)
 
-    @staticmethod
-    def _profile_tag_map(profile: dict) -> dict[str, dict]:
-        body = profile.get("profile", profile) if isinstance(profile, dict) else {}
-        result: dict[str, dict] = {}
-        structured = body.get("tag_preferences") if isinstance(body, dict) else None
-        if isinstance(structured, list):
-            for item in structured:
-                if not isinstance(item, dict):
-                    continue
-                tag = _text(item.get("tag"), 120)
-                try:
-                    weight = max(-1.0, min(1.0, float(item.get("weight", 0))))
-                    confidence = max(0.0, min(1.0, float(item.get("confidence", 0))))
-                except (TypeError, ValueError):
-                    continue
-                if tag:
-                    result[tag] = {
-                        **item,
-                        "tag": tag,
-                        "weight": weight,
-                        "confidence": confidence,
-                        "constraint": "hard" if item.get("constraint") == "hard" else "soft",
-                    }
-        return result
-
-    @staticmethod
-    def _normalized_feedback(channel: str, value: object) -> float:
-        numeric = _finite_float(value)
-        if channel == "interest":
-            return 1.0 if bool(numeric) else -1.0
-        if channel == "overall":
-            return max(-1.0, min(1.0, (numeric - 5.5) / 4.5))
-        raise LocalFeatureError("反馈通道无效")
-
-    @staticmethod
-    def _cosine(left: list[float], right: list[float]) -> float | None:
-        if len(left) != len(right) or not left:
-            return None
-        dot = sum(a * b for a, b in zip(left, right))
-        left_norm = math.sqrt(sum(value * value for value in left))
-        right_norm = math.sqrt(sum(value * value for value in right))
-        if left_norm <= 0 or right_norm <= 0:
-            return None
-        return max(-1.0, min(1.0, dot / (left_norm * right_norm)))
-
-    def _load_feature_vectors(self) -> dict[str, dict[str, list[float]]]:
+    def _load_feature_vectors(self) -> dict:
         with self.lock, self._managed_connection() as connection:
             rows = connection.execute(
                 "SELECT comic_id,modality,vector_json FROM item_feature_cache "
                 "WHERE status='ready' AND vector_json IS NOT NULL"
             ).fetchall()
-        result: dict[str, dict[str, list[float]]] = {}
+        result = {}
         for row in rows:
             try:
                 vector = self._normalize_embedding_vector(json.loads(row["vector_json"]))
+                result.setdefault(row["comic_id"], {})[row["modality"]] = vector
             except (LocalFeatureError, TypeError, ValueError):
                 continue
-            result.setdefault(row["comic_id"], {})[row["modality"]] = vector
         return result
-
-    def _implicit_interest_by_comic(self) -> dict[str, tuple[float, float, str]]:
-        event_values = {
-            "impression": (-0.08, 0.12),
-            "detail_open": (0.35, 0.35),
-            "read_start": (0.65, 0.55),
-            "read_progress": (0.75, 0.6),
-            "read_complete": (0.9, 0.75),
-            "favorite": (1.0, 0.8),
-            "unfavorite": (-0.45, 0.4),
-            "dismiss": (-1.0, 0.75),
-        }
-        result: dict[str, tuple[float, float, str]] = {}
-        with self.lock, self._managed_connection() as connection:
-            event_rows = connection.execute(
-                "SELECT comic_id,event_type,created_at FROM interaction_events ORDER BY created_at,id"
-            ).fetchall()
-        timestamps: dict[str, int] = {}
-        for row in event_rows:
-            signal = event_values.get(row["event_type"])
-            if not signal:
-                continue
-            comic_id = row["comic_id"]
-            created_at = int(row["created_at"])
-            previous = result.get(comic_id)
-            previous_at = timestamps.get(comic_id, -1)
-            # A meaningful action overrides an impression; otherwise the latest action wins.
-            if previous and created_at < previous_at:
-                continue
-            if previous and row["event_type"] == "impression" and abs(previous[0]) >= 0.3:
-                continue
-            result[comic_id] = (signal[0], signal[1], "implicit")
-            timestamps[comic_id] = created_at
-        return result
-
-    @staticmethod
-    def _centroid(entries: list[tuple[list[float], float]]) -> list[float] | None:
-        if not entries:
-            return None
-        dimensions = Counter(len(vector) for vector, _weight in entries).most_common(1)[0][0]
-        matching = [(vector, weight) for vector, weight in entries if len(vector) == dimensions]
-        total = sum(weight for _vector, weight in matching)
-        if total <= 0:
-            return None
-        return [
-            sum(vector[index] * weight for vector, weight in matching) / total
-            for index in range(dimensions)
-        ]
-
-    def _fit_preference_head(
-        self,
-        examples: list[dict],
-        vectors: dict[str, dict[str, list[float]]],
-    ) -> dict:
-        total_weight = sum(example["weight"] for example in examples)
-        observed_mean = (
-            sum(example["value"] * example["weight"] for example in examples) / total_weight
-            if total_weight else 0.0
-        )
-        # Sparse personal data should stay close to neutral until evidence accumulates.
-        prior = observed_mean * (total_weight / (total_weight + 3.0))
-
-        def attributes(field: str) -> dict[str, dict]:
-            grouped: dict[str, list[dict]] = {}
-            for example in examples:
-                attribution = example.get("attribution", "")
-                allowed_attributions = (
-                    {"", "overall", "tag_mix"}
-                    if field == "tags" else {"", "overall", "author"}
-                )
-                if attribution not in allowed_attributions:
-                    continue
-                for attribute in example["comic"].get(field, []):
-                    grouped.setdefault(attribute, []).append(example)
-            result = {}
-            for attribute, values in grouped.items():
-                weight = sum(item["weight"] for item in values)
-                mean = sum(item["value"] * item["weight"] for item in values) / weight
-                shrinkage = weight / (weight + 3.0)
-                estimate = prior + (mean - prior) * shrinkage
-                result[attribute] = {
-                    "value": max(-1.0, min(1.0, estimate)),
-                    "effect": max(-1.0, min(1.0, estimate - prior)),
-                    "confidence": min(0.9, weight / (weight + 3.0)),
-                    "sample_count": len(values),
-                }
-            return result
-
-        prototypes = {}
-        for modality in FEATURE_MODALITIES:
-            positive = []
-            negative = []
-            for example in examples:
-                attribution = example.get("attribution", "")
-                allowed_attributions = {"", "overall", modality}
-                if attribution not in allowed_attributions:
-                    continue
-                vector = vectors.get(example["comic"]["id"], {}).get(modality)
-                if not vector or abs(example["value"]) < 0.05:
-                    continue
-                target = positive if example["value"] > 0 else negative
-                target.append((vector, abs(example["value"]) * example["weight"]))
-            positive_centroid = self._centroid(positive)
-            negative_centroid = self._centroid(negative)
-            if positive_centroid or negative_centroid:
-                sample_count = len(positive) + len(negative)
-                prototypes[modality] = {
-                    "positive": positive_centroid,
-                    "negative": negative_centroid,
-                    "positive_count": len(positive),
-                    "negative_count": len(negative),
-                    "confidence": min(0.9, sample_count / (sample_count + 4.0)),
-                }
-        return {
-            "prior": max(-1.0, min(1.0, prior)),
-            "confidence": min(0.9, total_weight / (total_weight + 5.0)),
-            "example_count": len(examples),
-            "tags": attributes("tags"),
-            "authors": attributes("authors"),
-            "prototypes": prototypes,
-        }
 
     def _build_preference_model(self) -> dict:
-        comics = self.list_comics("all")
+        rows = self.list_comics("all")
+        content = ContentEvidence(self).features()
+        # A changed title invalidates old semantic evidence immediately.
+        for row in rows:
+            entry = content.get(row["id"])
+            if entry and entry["source"]["title"] != row["title"]:
+                content.pop(row["id"], None)
         vectors = self._load_feature_vectors()
-        implicit_interest = self._implicit_interest_by_comic()
-        examples: dict[str, list[dict]] = {channel: [] for channel in PREFERENCE_HEADS}
-        for comic in comics:
-            interest_feedback = comic.get("interest_feedback", {})
-            for attribution, willingness in interest_feedback.items():
-                source = willingness.get("source", "recommendation_feedback")
-                examples["interest"].append({
-                    "comic": comic,
-                    "value": self._normalized_feedback("interest", willingness["value"]),
-                    "weight": SOURCE_RELIABILITY.get(source, 0.5),
-                    "source": source,
-                    "attribution": attribution if attribution in INTEREST_REASONS else "",
-                })
-            if not interest_feedback and comic["id"] in implicit_interest:
-                signal, weight, source = implicit_interest[comic["id"]]
-                examples["interest"].append({
-                    "comic": comic, "value": signal, "weight": weight, "source": source,
-                    "attribution": "",
-                })
-            if comic.get("rating") is not None:
-                examples["overall"].append({
-                    "comic": comic,
-                    "value": self._normalized_feedback("overall", comic["rating"]),
-                    "weight": SOURCE_RELIABILITY["rating"],
-                    "source": "rating",
-                    "attribution": "overall",
-                })
-            elif comic.get("favorite"):
-                examples["overall"].append({
-                    "comic": comic, "value": 0.25, "weight": 0.2, "source": "implicit",
-                    "attribution": "overall",
-                })
-        evidence = self.list_comics("evidence")
-        tag_preferences, _uncertain, _counts = self._derive_tag_preferences(evidence)
-        # An optional LLM may extract only attitudes the user stated directly
-        # in a review.  Re-validate those saved signals against the current
-        # evidence and admit them as soft, lower-confidence evidence.  Manual
-        # tag feedback always wins, and an LLM extraction can never hard-block.
-        tag_preferences_by_name = {signal["tag"]: signal for signal in tag_preferences}
-        saved_profile = self.read_profile() or {}
-        saved_body = saved_profile.get("profile", saved_profile)
-        saved_signals = saved_body.get("tag_preferences", []) if isinstance(saved_body, dict) else []
-        evidence_by_id = {item["id"]: item for item in evidence}
-        for raw_signal in saved_signals if isinstance(saved_signals, list) else []:
-            if not isinstance(raw_signal, dict) or raw_signal.get("source") != "review_explicit":
-                continue
-            tag = _text(raw_signal.get("tag"), 120)
-            current = tag_preferences_by_name.get(tag)
-            if not tag or (current and current.get("source") == "explicit"):
-                continue
-            evidence_ids = [
-                comic_id for comic_id in _string_list(raw_signal.get("evidence_ids"), 20)
-                if comic_id in evidence_by_id
-                and evidence_by_id[comic_id].get("review")
-                and tag in evidence_by_id[comic_id].get("tags", [])
-            ]
-            if not evidence_ids:
-                continue
-            try:
-                weight = max(-0.65, min(0.65, float(raw_signal.get("weight", 0))))
-                confidence = max(0.0, min(0.6, float(raw_signal.get("confidence", 0))))
-            except (TypeError, ValueError):
-                continue
-            if not weight or not confidence:
-                continue
-            tag_preferences_by_name[tag] = {
-                **raw_signal,
-                "tag": tag,
-                "weight": round(weight, 3),
-                "confidence": round(confidence, 3),
-                "source": "review_explicit",
-                "constraint": "soft",
-                "sample_count": len(evidence_ids),
-                "evidence_ids": evidence_ids,
-            }
-        tag_preferences = list(tag_preferences_by_name.values())
-        return {
-            "heads": {
-                channel: self._fit_preference_head(examples[channel], vectors)
-                for channel in PREFERENCE_HEADS
-            },
-            "tag_preferences": {signal["tag"]: signal for signal in tag_preferences},
-            "vectors": vectors,
-            "evidence_counts": {channel: len(values) for channel, values in examples.items()},
-        }
-
-    @staticmethod
-    def _embedding_weight(channel: str, modality: str) -> float:
-        weights = {
-            "interest": {"cover": 0.65, "title": 0.35, "joint": 0.8},
-            "overall": {"cover": 0.25, "title": 0.3, "joint": 0.65},
-        }
-        return weights.get(channel, {}).get(modality, 0.0)
-
-    def _predict_head(
-        self,
-        channel: str,
-        head: dict,
-        candidate: dict,
-        candidate_vectors: dict[str, list[float]],
-    ) -> tuple[float | None, float, list[dict]]:
-        if not head.get("example_count"):
-            return None, 0.0, []
-        prior = float(head["prior"])
-        signals = [{
-            "kind": "prior", "value": prior,
-            "weight": max(0.15, float(head["confidence"]) * 0.7),
-            "confidence": float(head["confidence"]),
-        }]
-        for field, kind in (("tags", "tag"), ("authors", "author")):
-            matches = []
-            for attribute in candidate.get(field, []):
-                signal = head[field].get(attribute)
-                if signal:
-                    matches.append((attribute, signal))
-            matches.sort(key=lambda pair: abs(pair[1]["effect"]) * pair[1]["confidence"], reverse=True)
-            for attribute, signal in matches[:4 if field == "tags" else 2]:
-                signals.append({
-                    "kind": kind,
-                    "name": attribute,
-                    "value": float(signal["value"]),
-                    "weight": float(signal["confidence"]) * (0.75 if field == "tags" else 0.9),
-                    "confidence": float(signal["confidence"]),
-                    "sample_count": int(signal["sample_count"]),
-                })
-        for modality, prototype in head.get("prototypes", {}).items():
-            vector = candidate_vectors.get(modality)
-            if not vector:
-                continue
-            positive_similarity = (
-                self._cosine(vector, prototype["positive"]) if prototype.get("positive") else None
-            )
-            negative_similarity = (
-                self._cosine(vector, prototype["negative"]) if prototype.get("negative") else None
-            )
-            if positive_similarity is not None and negative_similarity is not None:
-                value = max(-1.0, min(1.0, (positive_similarity - negative_similarity) * 2.5))
-            elif positive_similarity is not None:
-                value = max(-1.0, min(1.0, (positive_similarity - 0.5) * 1.8))
-            elif negative_similarity is not None:
-                value = max(-1.0, min(1.0, (0.5 - negative_similarity) * 1.8))
-            else:
-                continue
-            weight = self._embedding_weight(channel, modality) * float(prototype["confidence"])
-            if weight <= 0:
-                continue
-            signals.append({
-                "kind": "embedding",
-                "modality": modality,
-                "value": value,
-                "weight": weight,
-                "confidence": float(prototype["confidence"]),
-                "positive_similarity": (
-                    round(positive_similarity, 4) if positive_similarity is not None else None
-                ),
-                "negative_similarity": (
-                    round(negative_similarity, 4) if negative_similarity is not None else None
-                ),
-            })
-        total_weight = sum(signal["weight"] for signal in signals)
-        estimate = sum(signal["value"] * signal["weight"] for signal in signals) / total_weight
-        estimate = max(-1.0, min(1.0, estimate))
-        confidence = min(
-            0.95,
-            (1.0 - math.exp(-total_weight / 1.8))
-            * min(1.0, head["example_count"] / 4.0),
-        )
-        for signal in signals:
-            signal["effect"] = round((signal["value"] - prior) * signal["weight"], 4)
-            signal["value"] = round(signal["value"], 4)
-            signal["weight"] = round(signal["weight"], 4)
-            signal["confidence"] = round(signal["confidence"], 4)
-        return estimate, confidence, signals
-
-    def _candidate_vectors(self, candidate: dict, model: dict) -> dict[str, list[float]]:
-        result = dict(model["vectors"].get(candidate["id"], {}))
-        raw_features = (
-            candidate.get("_feature_inputs")
-            if isinstance(candidate.get("_feature_inputs"), dict)
-            else (candidate.get("features") if isinstance(candidate.get("features"), dict) else {})
-        )
-        for modality in FEATURE_MODALITIES:
-            raw = candidate.get(f"{modality}_embedding", raw_features.get(modality))
-            if isinstance(raw, dict):
-                raw = raw.get("vector", raw.get("embedding"))
-            if raw is None:
-                continue
-            try:
-                result[modality] = self._normalize_embedding_vector(raw)
-            except LocalFeatureError:
-                # One corrupt or unavailable modality must not prevent metadata-only scoring.
-                continue
-        return result
+        tags, _, _ = self._derive_tag_preferences(rows)
+        return {"ranker": PreferenceModel(rows, content, vectors), "rows": rows,
+                "content": content, "vectors": vectors,
+                "tag_preferences": {v["tag"]: v for v in tags if v["source"] == "explicit"}}
 
     def _recommendation_history_map(self) -> dict[str, dict]:
         with self.lock, self._managed_connection() as connection:
@@ -2153,9 +1827,10 @@ class LocalFeatureStore:
 
     @staticmethod
     def _novelty_adjustment(history: dict | None) -> tuple[float, float]:
-        if not history or not history.get("latest"):
+        if not history:
             return 3.0, 0.0
-        age_days = max(0.0, (time.time() - history["latest"]) / 86400)
+        latest = history.get("latest", 0)
+        age_days = max(0.0, (time.time() - latest) / 86400)
         if age_days <= 1:
             penalty = 14.0
         elif age_days <= 7:
@@ -2171,290 +1846,113 @@ class LocalFeatureStore:
         if negative_at:
             negative_age = max(0.0, (time.time() - negative_at) / 86400)
             penalty += 18.0 * max(0.2, 1.0 - negative_age / 180.0)
-        return 0.0, round(penalty, 2)
+        return (0.0 if latest else 3.0), round(penalty, 2)
 
-    @staticmethod
-    def _deterministic_reason(item: dict) -> str:
-        parts = []
-        positive_tags = [
-            match["tag"] for match in item.get("preference_matches", [])
-            if match.get("weight", 0) > 0
-        ]
-        if positive_tags:
-            parts.append(f"匹配明确偏好标签：{'、'.join(positive_tags[:3])}")
-        positive_authors = [
-            match["author"] for match in item.get("preferred_author_matches", [])
-            if match.get("value", 0) > 0
-        ]
-        if positive_authors:
-            parts.append(f"作者历史反馈较好：{'、'.join(positive_authors[:2])}")
-        positive_modalities = []
-        for signals in item.get("prediction_signals", {}).values():
-            for signal in signals:
-                if signal.get("kind") == "embedding" and signal.get("effect", 0) > 0.015:
-                    label = {"cover": "封面", "title": "标题", "joint": "封面与标题联合"}.get(
-                        signal.get("modality"), signal.get("modality")
-                    )
-                    if label and label not in positive_modalities:
-                        positive_modalities.append(label)
-        if positive_modalities:
-            parts.append(f"{'、'.join(positive_modalities[:2])}向量接近你的正向样本")
-        if item.get("repetition_penalty", 0) > 0:
-            parts.append("近期出现过，已降低重复权重")
-        return "；".join(parts[:3]) or "个性化证据仍少，作为探索候选"
-
-    def _score_candidate_structured(
-        self,
-        model: dict,
-        candidate: dict,
-        history: dict[str, dict],
-    ) -> dict | None:
-        tag_matches = []
-        tag_adjustment = 0.0
-        tag_confidence = 0.0
-        for tag in candidate.get("tags", []):
-            signal = model["tag_preferences"].get(tag)
-            if not signal:
-                continue
-            weight = float(signal["weight"])
-            confidence = float(signal["confidence"])
-            if weight < 0 and signal.get("constraint") == "hard":
-                return None
-            contribution = weight * confidence
-            tag_adjustment += contribution
-            tag_confidence += confidence
-            tag_matches.append({
-                "tag": tag,
-                "weight": round(weight, 3),
-                "confidence": round(confidence, 3),
-                "contribution": round(contribution * 20, 2),
-                "source": signal.get("source", "inferred"),
-            })
-        tag_adjustment = max(-1.0, min(1.0, tag_adjustment))
-        candidate_vectors = self._candidate_vectors(candidate, model)
-        predictions = {}
-        confidences = {}
-        prediction_signals = {}
-        for channel, head in model["heads"].items():
-            estimate, confidence, signals = self._predict_head(
-                channel, head, candidate, candidate_vectors,
-            )
-            predictions[channel] = estimate
-            confidences[channel] = confidence
-            prediction_signals[channel] = signals
-
-        interest = predictions["interest"]
-        interest_confidence = confidences["interest"]
-        if tag_matches:
-            interest = max(-1.0, min(1.0, (interest or 0.0) + tag_adjustment * 0.5))
-            interest_confidence = max(interest_confidence, min(0.95, tag_confidence / 3.0))
-        overall = predictions["overall"]
-        overall_confidence = confidences["overall"]
-        if tag_matches:
-            overall = max(-1.0, min(1.0, (overall or 0.0) + tag_adjustment * 0.18))
-            overall_confidence = max(overall_confidence, min(0.75, tag_confidence / 5.0))
-
-        interest_score = round(50 + 50 * (interest if interest is not None else 0.0), 1)
-        overall_score = round(50 + 50 * (overall if overall is not None else 0.0), 1)
-        overall_weight = 0.75
-        interest_weight = 0.25
-        base_score = overall_score * overall_weight + interest_score * interest_weight
-        novelty_bonus, repetition_penalty = self._novelty_adjustment(history.get(candidate["id"]))
-        final_score = round(max(0.0, min(100.0, base_score + novelty_bonus - repetition_penalty)))
-
-        author_matches = []
-        for author in candidate.get("authors", []):
-            signals = []
-            for head_name in ("interest", "overall"):
-                signal = model["heads"][head_name]["authors"].get(author)
-                if signal:
-                    signals.append(signal)
-            if signals:
-                author_matches.append({
-                    "author": author,
-                    "value": round(sum(signal["value"] for signal in signals) / len(signals), 3),
-                    "confidence": round(max(signal["confidence"] for signal in signals), 3),
-                })
-        public_candidate = {
-            key: value for key, value in candidate.items() if not key.startswith("_")
-        }
-        result = {
-            **public_candidate,
-            "score": final_score,
-            "local_score": final_score,
-            "confidence": round(overall_confidence * overall_weight + interest_confidence * interest_weight, 3),
-            "rating_confidence": round(overall_confidence, 3),
-            "interest_confidence": round(interest_confidence, 3),
-            "novelty_bonus": novelty_bonus,
-            "repetition_penalty": repetition_penalty,
-            "preference_matches": tag_matches,
-            "preferred_author_matches": author_matches,
-            "feature_availability": {
-                modality: modality in candidate_vectors for modality in sorted(FEATURE_MODALITIES)
-            },
-            "prediction_signals": prediction_signals,
-            "score_components": {
-                "overall_rating": overall_score,
-                "behavior_interest": interest_score,
-                "novelty_bonus": novelty_bonus,
-                "repetition_penalty": -repetition_penalty,
-            },
-            "score_breakdown": [
-                {
-                    "key": "overall_rating", "label": "总评分偏好",
-                    "score": overall_score, "weight": overall_weight,
-                    "contribution": round(overall_score * overall_weight, 2),
-                    "detail": "由历史 1–10 分总评、作者/标签和可用向量预测",
-                },
-                {
-                    "key": "behavior_interest", "label": "行为反馈",
-                    "score": interest_score, "weight": interest_weight,
-                    "contribution": round(interest_score * interest_weight, 2),
-                    "detail": "由感兴趣、不感兴趣和真实阅读行为提供辅助信号",
-                },
-                {
-                    "key": "novelty", "label": "探索奖励",
-                    "contribution": novelty_bonus,
-                    "detail": "未推荐过的候选获得少量探索空间" if novelty_bonus else "无探索加分",
-                },
-                {
-                    "key": "repetition", "label": "重复惩罚",
-                    "contribution": -repetition_penalty,
-                    "detail": "随距上次推荐的时间逐渐衰减",
-                },
-            ],
-        }
-        result["reason"] = self._deterministic_reason(result)
-        return result
+    def _score_candidate_structured(self, model, candidate, history):
+        matching = [model["tag_preferences"][tag] for tag in candidate.get("tags", [])
+                    if tag in model["tag_preferences"]]
+        if any(v["constraint"] == "hard" and v["weight"] < 0 for v in matching):
+            return None
+        base, effects, known = model["ranker"].predict(candidate)
+        feedback = feedback_adjustment(candidate, model["rows"], model["vectors"])
+        feedback += max(-8, min(8, sum(v["weight"]*v["confidence"]*8 for v in matching)))
+        novelty, repetition = self._novelty_adjustment(history.get(candidate["id"]))
+        entry = model["content"].get(candidate["id"], {})
+        assertions = entry.get("assertions", {})
+        evidence = [{"dimension": name, "label": DIMENSIONS[name], **assertion,
+                     "direction": "positive" if effects.get("content:"+name, 0) > 0 else
+                                  "negative" if effects.get("content:"+name, 0) < 0 else "neutral"}
+                    for name, assertion in assertions.items()]
+        reason = "按7分喜欢门槛及历史评分排序。"
+        if evidence:
+            strongest = max(evidence, key=lambda v: abs(effects.get("content:"+v["dimension"], 0)))
+            source = "评论提到" if strongest["source"].startswith("comment:") else "作品资料提到"
+            reason += f"{source}：{strongest['quote']}。"
+        else:
+            reason += "缺少可核验的内容证据，当前主要参考标签及已有特征。"
+        if not model["ranker"].trained:
+            reason = "评分样本尚未同时覆盖7分以上与未达门槛作品；当前为探索排序。" + reason
+        utility = base + feedback + novelty - repetition
+        return {**candidate, "score": round(max(0, min(100, utility)), 1),
+                "reason": reason, "evidence": evidence, "known_dimensions": known,
+                "content_status": entry.get("status", "missing"),
+                "ranking_engine": ENGINE, "_utility": utility,
+                "score_breakdown": [
+                    {"key": "preference", "label": "喜欢门槛匹配", "contribution": round(base, 2),
+                     "detail": "以7分为门槛训练；推荐分不是喜欢概率"},
+                    {"key": "feedback", "label": "明确反馈", "contribution": round(feedback, 2),
+                     "detail": "标签态度和对应维度反馈；不使用历史点击、完读次数"},
+                    {"key": "novelty", "label": "探索", "contribution": novelty},
+                    {"key": "repetition", "label": "重复控制", "contribution": -repetition},
+                ]}
 
     def generate_recommendations(self, value: object) -> dict:
         data = value if isinstance(value, dict) else {}
-        raw_candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
-        candidates = []
-        seen = set()
-        for item in raw_candidates[:300]:
+        raw = data.get("candidates", [])
+        if not isinstance(raw, list):
+            raise LocalFeatureError("候选必须是列表")
+        candidates, seen = [], set()
+        for item in raw[:300]:
             if not isinstance(item, dict):
                 continue
             comic_id = _text(item.get("id"), 40)
             if not re.fullmatch(r"\d+", comic_id) or comic_id in seen:
                 continue
             seen.add(comic_id)
-            feature_inputs = {}
-            if isinstance(item.get("features"), dict):
-                feature_inputs.update(item["features"])
-            for modality in FEATURE_MODALITIES:
-                key = f"{modality}_embedding"
-                if key in item:
-                    feature_inputs[modality] = item.get(key)
-            candidates.append({
-                "id": comic_id,
-                "title": _text(item.get("title", item.get("name")), 500),
-                "authors": _string_list(item.get("authors", item.get("author"))),
-                "tags": _string_list(item.get("tags")),
-                "cover_url": _text(
-                    item.get("cover_url", item.get("image_url", item.get("image"))), 2000,
-                ),
-                "_feature_inputs": feature_inputs,
-            })
+            candidates.append({"id": comic_id, "title": _text(item.get("title"), 500),
+                               "authors": _string_list(item.get("authors")), "tags": _string_list(item.get("tags")),
+                               "cover_url": _text(item.get("cover_url"), 2000)})
         if not candidates:
-            raise LocalFeatureError("没有可用于本地推荐的候选漫画")
-        inline_features = {
-            item["id"]: item.get("_feature_inputs", {})
-            for item in candidates if item.get("_feature_inputs")
-        }
-        raw_candidate_count = len(candidates)
+            raise LocalFeatureError("没有可用于推荐的候选漫画")
         model = self._build_preference_model()
+        for item in candidates:
+            entry = model["content"].get(item["id"])
+            if entry and entry["source"]["title"] != item["title"]:
+                model["content"].pop(item["id"], None)
         history = self._recommendation_history_map()
-        candidates = [
-            scored for item in candidates
-            if (scored := self._score_candidate_structured(model, item, history)) is not None
-        ]
-        blocked_by_preferences = raw_candidate_count - len(candidates)
-        if not candidates:
+        scored = [result for item in candidates
+                  if (result := self._score_candidate_structured(model, item, history)) is not None]
+        blocked = len(candidates) - len(scored)
+        if not scored:
             raise LocalFeatureError("候选漫画全部命中了用户设置的硬屏蔽标签")
         raw_limit = data.get("limit", 10)
-        limit = None if raw_limit == "all" else min(100, max(1, int(raw_limit)))
-        request_info = data.get("filters") if isinstance(data.get("filters"), dict) else {}
-        request_info = {
-            **request_info,
-            "keyword": _text(data.get("keyword"), 200),
-            "limit": raw_limit,
-            "ranking_engine": "local-total-rating-v1",
-        }
-        candidates.sort(key=lambda item: (item["score"], item["confidence"]), reverse=True)
-        selected = candidates if limit is None else candidates[:limit]
+        limit = len(scored) if raw_limit == "all" else min(100, max(1, int(raw_limit)))
+        selected = []
+        while scored and len(selected) < limit:
+            for item in scored:
+                # Small bounded author-diversity adjustment, never a hard exclusion.
+                count = sum(bool(set(item["authors"]) & set(prev["authors"])) for prev in selected)
+                item["_diversity"] = min(3.0, count * 1.0)
+            scored.sort(key=lambda item: (-(item["_utility"]-item["_diversity"]), item["id"]))
+            item = scored.pop(0)
+            diversity = item.pop("_diversity")
+            utility = item.pop("_utility") - diversity
+            item["score_breakdown"].append({"key": "diversity", "label": "作者多样性", "contribution": -diversity})
+            clipped = max(0, min(100, utility))
+            item["score_breakdown"].append({"key": "bounds", "label": "分数范围", "contribution": round(clipped-utility, 2)})
+            item["score"] = round(clipped, 1)
+            selected.append(item)
+        request = {"filters": data.get("filters", {}), "limit": raw_limit, "ranking_engine": ENGINE}
+        result = {"created_at": int(time.time()), "ranking_engine": ENGINE,
+                  "blocked_by_preferences": blocked, "evidence_counts": model["ranker"].counts,
+                  "trained": model["ranker"].trained, "recommendations": selected}
         with self.lock, self._managed_connection() as connection:
             cursor = connection.execute(
-                "INSERT INTO recommendation_runs(created_at,model,request_json,candidates_json,status) VALUES(?,?,?,?,?)",
-                (
-                    int(time.time()), "local-total-rating-v1",
-                    json.dumps(request_info, ensure_ascii=False),
-                    json.dumps(candidates, ensure_ascii=False), "running",
-                ),
-            )
-            run_id = cursor.lastrowid
-        try:
-            result = {
-                "id": run_id,
-                "created_at": int(time.time()),
-                "ranking_engine": "local-total-rating-v1",
-                "blocked_by_preferences": blocked_by_preferences,
-                "evidence_counts": model["evidence_counts"],
-                "recommendations": selected,
-            }
-            with self.lock, self._managed_connection() as connection:
-                connection.execute(
-                    "UPDATE recommendation_runs SET result_json=?,raw_output_json=?,status='success' WHERE id=?",
-                    (json.dumps(result, ensure_ascii=False), "[]", run_id),
-                )
-                for item in selected:
-                    self._upsert_with_connection(connection, item)
+                "INSERT INTO recommendation_runs(created_at,model,request_json,status) VALUES(?,?,?,?)",
+                (result["created_at"], ENGINE, json.dumps(request, ensure_ascii=False), "success"))
+            result["id"] = cursor.lastrowid
+            connection.execute("UPDATE recommendation_runs SET result_json=? WHERE id=?",
+                               (json.dumps(result, ensure_ascii=False), result["id"]))
             for item in selected:
-                if item["id"] not in inline_features:
-                    continue
-                try:
-                    self.save_item_features({
-                        "comic_id": item["id"],
-                        "features": inline_features[item["id"]],
-                    })
-                except LocalFeatureError:
-                    # Invalid optional vectors already degraded gracefully during scoring.
-                    continue
-            return result
-        except Exception as error:
-            with self.lock, self._managed_connection() as connection:
-                connection.execute(
-                    "UPDATE recommendation_runs SET raw_output_json=?,status='failed',error=? WHERE id=?",
-                    ("[]", _text(error, 1000), run_id),
-                )
-            raise
+                self._upsert_with_connection(connection, item)
+        return result
 
     def recommendation_history(self, limit: int = 20) -> list[dict]:
-        safe_limit = max(1, min(50, int(limit)))
         with self.lock, self._managed_connection() as connection:
             rows = connection.execute(
-                "SELECT id,created_at,model,request_json,result_json,raw_output_json,status,error "
-                "FROM recommendation_runs ORDER BY id DESC LIMIT ?",
-                (safe_limit,),
-            ).fetchall()
-        result = []
-        for row in rows:
-            output = json.loads(row["result_json"]) if row["result_json"] else {}
-            request_value = json.loads(row["request_json"] or "{}")
-            raw_outputs = json.loads(row["raw_output_json"] or "[]")
-            recommendations = []
-            for raw_item in output.get("recommendations", []):
-                if not isinstance(raw_item, dict):
-                    continue
-                # Per-example training traces remain in SQLite but are omitted
-                # from the history list, which is fetched on every page load.
-                item = dict(raw_item)
-                item.pop("prediction_signals", None)
-                recommendations.append(item)
-            result.append({
-                "id": row["id"], "created_at": row["created_at"], "model": row["model"],
-                "filters": request_value, "status": row["status"], "error": row["error"],
-                "raw_outputs": raw_outputs if isinstance(raw_outputs, list) else [],
-                "recommendations": recommendations,
-            })
-        return result
+                "SELECT id,created_at,model,request_json,result_json,status,error FROM recommendation_runs "
+                "WHERE model=? ORDER BY id DESC LIMIT ?", (ENGINE, max(1, min(50, int(limit))))).fetchall()
+        return [{"id": row["id"], "created_at": row["created_at"], "model": row["model"],
+                 "filters": json.loads(row["request_json"])["filters"], "status": row["status"],
+                 "error": row["error"], "recommendations": json.loads(row["result_json"])["recommendations"]}
+                for row in rows]
