@@ -1,11 +1,8 @@
-import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { escapeHtml, setBusy } from "./dom.js";
 import { icon } from "./icons.js";
 import { showToast } from "./toast.js";
-
-const DEFAULT_DASHSCOPE_URL = "https://dashscope.aliyuncs.com/api/v1";
 
 const block = (collapsible, { key, title, note, body, open = false }) => collapsible
     ? `<details class="disclosure account-block" data-block="${key}"${open ? " open" : ""}>
@@ -18,7 +15,7 @@ const block = (collapsible, { key, title, note, body, open = false }) => collaps
         </section>`;
 
 /**
- * Account + AI service configuration. Rendered inside the shell's account sheet
+ * Account + optional translation model configuration. Rendered inside the shell's account sheet
  * and inline on the settings page. Secrets are write-only: saved keys are never
  * read back, only their masked form is shown.
  */
@@ -44,47 +41,30 @@ export class AccountPanel {
                 </div>
                 <p class="field-hint">账号密码以明文保存在本机，请只在自己的设备上使用。</p>
             </form>`;
-        const embeddingBody = `
-            <form class="form embedding-config-form" novalidate>
-                <label class="field"><span class="field-label">百炼 API Key</span><input class="input" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示继续使用已保存的 Key" /></label>
-                <label class="field"><span class="field-label">DashScope Base URL</span><input class="input" name="api_base_url" type="url" required autocapitalize="none" spellcheck="false" placeholder="${DEFAULT_DASHSCOPE_URL}" /></label>
-                <div class="form-grid">
-                    <label class="field"><span class="field-label">模型</span><input class="input" value="qwen3-vl-embedding" readonly /></label>
-                    <label class="field"><span class="field-label">向量维度</span><input class="input" value="1024" readonly /></label>
-                </div>
-                <p class="status-line embedding-config-state" role="status"></p>
-                <div class="form-actions">
-                    <button class="btn btn-primary embedding-config-save" type="submit">保存</button>
-                    <button class="btn btn-outline embedding-config-test" type="button">测试连接</button>
-                    <button class="btn btn-ghost btn-danger embedding-config-clear" type="button" hidden>清除</button>
-                </div>
-            </form>`;
-        const llmBody = `
-            <form class="form ai-config-form" novalidate>
+        const translationBody = `
+            <form class="form translation-config-form" novalidate>
                 <label class="field"><span class="field-label">API Key</span><input class="input" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示继续使用已保存的 Key" /></label>
                 <label class="field"><span class="field-label">Base URL</span><input class="input" name="base_url" type="url" required autocapitalize="none" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
                 <label class="field"><span class="field-label">模型</span><input class="input" name="model" required autocapitalize="none" spellcheck="false" placeholder="模型名称" /></label>
-                <label class="switch"><input name="use_ai_translation" type="checkbox" /><span class="switch-copy"><strong>用 AI 翻译标题</strong><small>开启后详情页的“译”按钮改为调用当前模型</small></span></label>
-                <p class="status-line ai-config-state" role="status"></p>
+                <label class="switch"><input name="use_ai_translation" type="checkbox" /><span class="switch-copy"><strong>用 AI 翻译标题</strong><small>开启后详情页的“翻译标题”改为调用此模型，关闭时使用默认翻译</small></span></label>
+                <p class="status-line translation-config-state" role="status"></p>
                 <div class="form-actions">
-                    <button class="btn btn-primary ai-config-save" type="submit">保存</button>
-                    <button class="btn btn-outline ai-config-test" type="button">测试连接</button>
-                    <button class="btn btn-ghost btn-danger ai-config-clear" type="button" hidden>清除</button>
+                    <button class="btn btn-primary translation-config-save" type="submit">保存</button>
+                    <button class="btn btn-outline translation-config-test" type="button">测试连接</button>
+                    <button class="btn btn-ghost btn-danger translation-config-clear" type="button" hidden>清除</button>
                 </div>
             </form>`;
 
         this.container.innerHTML = [
             block(false, { key: "account", title: "禁漫账号", note: "收藏、签到、消息与追更都依赖账号登录。", body: accountBody }),
-            block(this.collapsible, { key: "embedding", title: "Qwen 多模态向量", note: "AI 推荐必需", body: embeddingBody }),
-            block(this.collapsible, { key: "llm", title: "OpenAI 兼容 LLM", note: "可选 · 偏好概述与标题翻译", body: llmBody }),
+            block(this.collapsible, { key: "translation", title: "AI 标题翻译", note: "可选 · OpenAI 兼容接口", body: translationBody }),
         ].join("");
         if (this.collapsible) {
             // Inside the sheet the account block reads as a plain section, not a card.
             this.container.querySelector('[data-block="account"]').classList.remove("panel");
         }
         this.authForm = this.container.querySelector(".auth-form");
-        this.embeddingForm = this.container.querySelector(".embedding-config-form");
-        this.aiForm = this.container.querySelector(".ai-config-form");
+        this.translationForm = this.container.querySelector(".translation-config-form");
         this.bind();
         this.renderAccount();
         window.addEventListener("jm-auth-change", () => this.renderAccount());
@@ -94,12 +74,9 @@ export class AccountPanel {
     bind() {
         this.authForm.addEventListener("submit", (event) => this.handleLogin(event));
         this.authForm.querySelector(".clear-config-btn").addEventListener("click", () => this.clearAccount());
-        this.embeddingForm.addEventListener("submit", (event) => this.saveEmbedding(event));
-        this.embeddingForm.querySelector(".embedding-config-test").addEventListener("click", () => this.testEmbedding());
-        this.embeddingForm.querySelector(".embedding-config-clear").addEventListener("click", () => this.clearEmbedding());
-        this.aiForm.addEventListener("submit", (event) => this.saveAi(event));
-        this.aiForm.querySelector(".ai-config-test").addEventListener("click", () => this.testAi());
-        this.aiForm.querySelector(".ai-config-clear").addEventListener("click", () => this.clearAi());
+        this.translationForm.addEventListener("submit", (event) => this.saveTranslation(event));
+        this.translationForm.querySelector(".translation-config-test").addEventListener("click", () => this.testTranslation());
+        this.translationForm.querySelector(".translation-config-clear").addEventListener("click", () => this.clearTranslation());
     }
 
     /** Refresh everything from the local service; call whenever the panel becomes visible. */
@@ -108,8 +85,7 @@ export class AccountPanel {
         this.authForm.elements.username.value = authSession.configuredUsername;
         this.authForm.elements.password.value = "";
         this.renderAccount();
-        this.loadEmbedding();
-        this.loadAi();
+        this.loadTranslation();
     }
 
     reveal(section) {
@@ -121,8 +97,7 @@ export class AccountPanel {
 
     clearSecrets() {
         this.authForm.elements.password.value = "";
-        this.embeddingForm.elements.api_key.value = "";
-        this.aiForm.elements.api_key.value = "";
+        this.translationForm.elements.api_key.value = "";
     }
 
     renderAccount() {
@@ -157,29 +132,10 @@ export class AccountPanel {
             this.renderAccount();
             window.dispatchEvent(new CustomEvent("jm-notification-change"));
             showToast("账号已验证并保存", "success");
-            this.syncFavorites();
         } catch (error) {
             errorNode.textContent = error.message || "登录失败，请稍后重试";
         } finally {
             setBusy(submit, false);
-        }
-    }
-
-    async syncFavorites() {
-        const accountKey = String(authSession.user?.uid || authSession.configuredUsername || "");
-        try {
-            const items = await jmApi.getAllFavorites();
-            if (!authSession.isConfigured || accountKey !== String(authSession.user?.uid || authSession.configuredUsername || "")) return;
-            const result = await localRuntime.syncLocalFavorites(items.map((item) => ({
-                id: item.id,
-                title: item.name,
-                authors: Array.isArray(item.author) ? item.author : (item.author ? [item.author] : []),
-                tags: Array.isArray(item.tags) ? item.tags : [],
-                cover_url: jmApi.getCoverImageURL(item.id),
-            })));
-            showToast(`本地收藏已更新 · ${result.synced} 本`, "success");
-        } catch (error) {
-            showToast(error.message || "账号已保存，但本地收藏同步失败", "warning");
         }
     }
 
@@ -204,75 +160,8 @@ export class AccountPanel {
         node.className = `status-line ${selector.slice(1)}${tone ? ` is-${tone}` : ""}`;
     }
 
-    async loadEmbedding() {
-        const form = this.embeddingForm;
-        try {
-            const config = await localRuntime.getEmbeddingConfig();
-            form.elements.api_key.value = "";
-            form.elements.api_base_url.value = config.api_base_url || DEFAULT_DASHSCOPE_URL;
-            this.setState(form, ".embedding-config-state", config.configured
-                ? `已配置 · ${config.api_key_masked || "使用 DASHSCOPE_API_KEY 环境变量"}`
-                : "尚未配置；AI 推荐需要百炼 API Key", config.configured ? "success" : "");
-            form.querySelector(".embedding-config-clear").hidden = !config.configured || config.source === "environment";
-        } catch (error) {
-            this.setState(form, ".embedding-config-state", error.message || "向量接口配置读取失败", "error");
-        }
-    }
-
-    async saveEmbedding(event) {
-        event.preventDefault();
-        const form = this.embeddingForm;
-        const button = form.querySelector(".embedding-config-save");
-        setBusy(button, true);
-        this.setState(form, ".embedding-config-state", "正在保存…");
-        try {
-            await localRuntime.saveEmbeddingConfig({
-                api_key: form.elements.api_key.value.trim(),
-                api_base_url: form.elements.api_base_url.value.trim(),
-            });
-            await this.loadEmbedding();
-            showToast("Qwen 向量配置已保存", "success");
-        } catch (error) {
-            this.setState(form, ".embedding-config-state", error.message || "向量接口配置保存失败", "error");
-        } finally {
-            setBusy(button, false);
-        }
-    }
-
-    async testEmbedding() {
-        const form = this.embeddingForm;
-        const button = form.querySelector(".embedding-config-test");
-        setBusy(button, true);
-        this.setState(form, ".embedding-config-state", "正在调用 Qwen 向量接口…");
-        try {
-            const value = { api_base_url: form.elements.api_base_url.value.trim() };
-            const apiKey = form.elements.api_key.value.trim();
-            if (apiKey) value.api_key = apiKey;
-            const result = await localRuntime.testEmbeddingConfig(value);
-            await this.loadEmbedding();
-            this.setState(form, ".embedding-config-state", `连接成功 · ${result.model || "qwen3-vl-embedding"} · ${result.dimension || 1024} 维`, "success");
-            showToast("Qwen 向量接口连接成功", "success");
-        } catch (error) {
-            this.setState(form, ".embedding-config-state", error.message || "Qwen 向量接口连接失败", "error");
-        } finally {
-            setBusy(button, false);
-        }
-    }
-
-    async clearEmbedding() {
-        const form = this.embeddingForm;
-        try {
-            await localRuntime.clearEmbeddingConfig();
-            form.reset();
-            await this.loadEmbedding();
-            showToast("Qwen 向量配置已清除");
-        } catch (error) {
-            this.setState(form, ".embedding-config-state", error.message || "向量接口配置清除失败", "error");
-        }
-    }
-
-    aiFormValue() {
-        const form = this.aiForm;
+    translationFormValue() {
+        const form = this.translationForm;
         return {
             api_key: form.elements.api_key.value.trim(),
             base_url: form.elements.base_url.value.trim(),
@@ -281,66 +170,66 @@ export class AccountPanel {
         };
     }
 
-    async loadAi() {
-        const form = this.aiForm;
+    async loadTranslation() {
+        const form = this.translationForm;
         try {
-            const config = await localRuntime.getAiConfig();
+            const config = await localRuntime.getTranslationConfig();
             form.elements.api_key.value = "";
             form.elements.base_url.value = config.base_url || "";
             form.elements.model.value = config.model || "";
             form.elements.use_ai_translation.checked = Boolean(config.use_ai_translation);
-            this.setState(form, ".ai-config-state", config.configured
+            this.setState(form, ".translation-config-state", config.configured
                 ? `已配置 · ${config.api_key_masked || "API Key 已保存"}`
                 : "尚未配置", config.configured ? "success" : "");
-            form.querySelector(".ai-config-clear").hidden = !config.configured;
+            form.querySelector(".translation-config-clear").hidden = !config.configured;
         } catch (error) {
-            this.setState(form, ".ai-config-state", error.message || "LLM 配置读取失败", "error");
+            this.setState(form, ".translation-config-state", error.message || "翻译模型配置读取失败", "error");
         }
     }
 
-    async saveAi(event) {
+    async saveTranslation(event) {
         event.preventDefault();
-        const form = this.aiForm;
-        const button = form.querySelector(".ai-config-save");
+        const form = this.translationForm;
+        const button = form.querySelector(".translation-config-save");
         setBusy(button, true);
-        this.setState(form, ".ai-config-state", "正在保存…");
+        this.setState(form, ".translation-config-state", "正在保存…");
         try {
-            await localRuntime.saveAiConfig(this.aiFormValue());
-            await this.loadAi();
-            showToast("LLM 配置已保存", "success");
+            await localRuntime.saveTranslationConfig(this.translationFormValue());
+            await this.loadTranslation();
+            showToast("翻译模型配置已保存", "success");
         } catch (error) {
-            this.setState(form, ".ai-config-state", error.message || "LLM 配置保存失败", "error");
+            this.setState(form, ".translation-config-state", error.message || "翻译模型配置保存失败", "error");
         } finally {
             setBusy(button, false);
         }
     }
 
-    async testAi() {
-        const form = this.aiForm;
-        const button = form.querySelector(".ai-config-test");
+    async testTranslation() {
+        const form = this.translationForm;
+        const button = form.querySelector(".translation-config-test");
         setBusy(button, true);
-        this.setState(form, ".ai-config-state", "正在连接模型…");
+        this.setState(form, ".translation-config-state", "正在连接模型…");
         try {
-            const result = await localRuntime.testAiConfig(this.aiFormValue());
-            this.setState(form, ".ai-config-state", `连接成功 · ${result.model || form.elements.model.value}`, "success");
-            form.querySelector(".ai-config-clear").hidden = false;
-            showToast("LLM 接口连接成功", "success");
+            const result = await localRuntime.testTranslationConfig(this.translationFormValue());
+            this.setState(form, ".translation-config-state", `连接成功 · ${result.model || form.elements.model.value}`, "success");
+            form.querySelector(".translation-config-clear").hidden = false;
+            showToast("翻译模型连接成功", "success");
         } catch (error) {
-            this.setState(form, ".ai-config-state", error.message || "LLM 接口连接失败", "error");
+            this.setState(form, ".translation-config-state", error.message || "翻译模型连接失败", "error");
         } finally {
             setBusy(button, false);
         }
     }
 
-    async clearAi() {
-        const form = this.aiForm;
+    async clearTranslation() {
+        const form = this.translationForm;
         try {
-            await localRuntime.clearAiConfig();
+            await localRuntime.clearTranslationConfig();
             form.reset();
-            await this.loadAi();
-            showToast("LLM 配置已清除");
+            await this.loadTranslation();
+            showToast("翻译模型配置已清除");
         } catch (error) {
-            this.setState(form, ".ai-config-state", error.message || "LLM 配置清除失败", "error");
+            this.setState(form, ".translation-config-state", error.message || "翻译模型配置清除失败", "error");
         }
     }
 }

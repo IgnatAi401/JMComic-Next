@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = ROOT / "project"
 SOURCE_DIR = PROJECT_DIR / "src"
-PAGES = {"index", "latest", "categories", "search", "chapter", "reader", "library", "ai", "messages", "setting", "history-migration"}
+PAGES = {"index", "latest", "categories", "search", "chapter", "reader", "library", "messages", "setting", "history-migration"}
 
 def source(path):
     return (SOURCE_DIR / path).read_text(encoding="utf-8")
@@ -46,7 +46,7 @@ class FrontendStabilityTests(unittest.TestCase):
     def test_reader_keeps_image_lifecycle_separate_from_navigation(self):
         reader = source("pages/reader.js")
         loader = source("reader/EagerComicImageLoader.js")
-        for event in ["read_start", "read_progress", "read_complete"]: self.assertIn(event, reader)
+        self.assertNotIn("recordInteraction", reader)
         for value in ["pagehide", "pageshow", "isIOSWebKit", "memoryBudget", "cancelDecode", "renderError"]: self.assertIn(value, loader)
         self.assertNotIn("backdrop-filter", (PROJECT_DIR / "style/reader.css").read_text())
 
@@ -60,31 +60,32 @@ class FrontendStabilityTests(unittest.TestCase):
 
     def test_translation_cache_is_scoped_to_provider(self):
         page = source("pages/chapter.js")
-        for token in ["translationCacheKey", "ai:${", '\"google\"', "translateTitleWithAi", "translateTitleToSimplifiedChinese"]: self.assertIn(token, page)
+        for token in ["translationCacheKey", "ai:${", '\"google\"', "localRuntime.translateTitle(", "translateTitleToSimplifiedChinese"]: self.assertIn(token, page)
 
-    def test_interest_feedback_is_dimension_scoped_and_detail_only(self):
-        feedback = source("ui/interest.js")
-        for key in ["overall", "cover", "title", "tag_mix", "author"]: self.assertIn(key + ":", feedback)
-        self.assertIn(' ? "clear" : action', feedback)
-        self.assertIn("interest_feedback", feedback)
-        self.assertIn("saveRecommendationFeedback", feedback)
-        self.assertIn("InterestFeedback", source("pages/chapter.js"))
-        self.assertNotIn("InterestFeedback", source("pages/reader.js"))
-        self.assertNotIn("saveRecommendationFeedback", source("pages/ai.js"))
+    def test_recommendation_features_are_fully_removed(self):
+        frontend = "\n".join(path.read_text(encoding="utf-8") for path in SOURCE_DIR.rglob("*.js"))
+        backend = "\n".join(path.read_text(encoding="utf-8") for path in ROOT.glob("*.py") if not path.name.startswith("test_"))
+        for retired in [r"recommend", r"interest_feedback", r"recordinteraction", r"content-analysis", r"embedding", r"tag_feedback", r"\breview\b"]:
+            self.assertNotRegex(frontend.lower(), retired)
+            self.assertNotRegex(backend.lower(), retired)
+        for retired in ["qwen_embeddings.py", "recommender.py", "content_evidence.py", "content_analysis.py", "recommendation_jobs.py", "local_features.py"]:
+            self.assertFalse((ROOT / retired).exists(), retired)
 
-    def test_one_total_rating_retains_rules_and_explicit_tag_feedback(self):
+    def test_one_total_rating_retains_rules_and_saves_only_the_score(self):
         rating = source("ui/rating.js")
         for rule in ["垃圾作品，看了浪费时间", "有严重雷点", "中规中矩", "整体及格且有亮点", "全方面优秀"]: self.assertIn(rule, rating)
-        self.assertIn("[0, 1, -1, -2]", rating)
+        self.assertIn("saveRating({ ...comicPayload(", rating)
+        self.assertNotIn("textarea", rating)
         for page in ["chapter", "reader"]: self.assertIn("RatingEditor", source(f"pages/{page}.js"))
-        self.assertNotIn("aspect_scores", rating)
 
-    def test_recommendation_impressions_require_visibility_and_keep_explanations(self):
-        ai = source("pages/ai.js")
-        self.assertIn("entry.intersectionRatio < 0.45", ai)
-        self.assertIn("评分依据", ai)
-        self.assertIn("score_breakdown", ai)
-        self.assertIn("getDiscoveryExcludedIds", ai)
+    def test_preferences_are_edited_on_settings_and_colour_home_and_detail(self):
+        self.assertIn("PreferenceEditor", source("pages/setting.js"))
+        self.assertNotIn("savePreference", source("pages/chapter.js") + source("pages/index.js"))
+        for page in ["pages/index.js", "pages/chapter.js", "ui/rich-cards.js"]:
+            self.assertIn("preferenceAuthorsHtml", source(page), page)
+            self.assertIn("preferenceTagsHtml", source(page), page)
+        css = (PROJECT_DIR / "style/app.css").read_text()
+        for level in ["like", "fond", "avoid", "dislike"]: self.assertIn(f'[data-preference="{level}"]', css)
 
     def test_migration_utility_does_not_bootstrap_remote_accounts(self):
         page = source("pages/history-migration.js")
@@ -116,7 +117,8 @@ class FrontendStabilityTests(unittest.TestCase):
     def test_checkin_requires_an_explicit_success_response(self):
         api = (SOURCE_DIR / "api" / "JmcomicApi.js").read_text(encoding="utf-8")
         self.assertIn("签到响应异常，未确认成功", api)
-        self.assertIn("获得 $1 经验", api)
+        self.assertIn("DAILY_REWARD_PATTERN", api)
+        self.assertIn("没有收到签到参数", api)
 
 
 if __name__ == "__main__":

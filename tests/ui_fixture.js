@@ -1,6 +1,6 @@
 /* Local-only visual fixture. Real page/component modules run against these fakes. */
 const page = new URL(import.meta.url).searchParams.get("page") || "index";
-const allowedPages = new Set(["index", "setting", "messages", "reader", "chapter", "ai", "library", "search", "latest", "categories", "history-migration"]);
+const allowedPages = new Set(["index", "setting", "messages", "reader", "chapter", "library", "search", "latest", "categories", "history-migration"]);
 if (!allowedPages.has(page)) throw new Error("Unknown UI fixture page");
 const fixture = window.__uiFixture = { page, errors: [], blockedRequests: [], stubbedCalls: [] };
 const nativeFetch = window.fetch.bind(window);
@@ -32,27 +32,18 @@ const series = [
 ];
 const album = (id = "100100") => ({
     id: String(id), name: titles[Number(id) % titles.length], author: ["示例作者", "观察工作室"],
-    tags: ["旅行", "日常", "自然", "短篇"], actors: ["旅人"], works: ["风景手记"], related_list: [],
+    tags: Number(id) % 2 ? ["旅行", "日常", "自然", "短篇", "海岸线", "山间小路", "夜行列车", "图书馆", "城市观察", "雨天", "旅途手记", "长篇连载", "季节变化", "风景速写", "港口", "灯塔", "晨雾", "溪流", "老街", "书店", "车站", "黄昏", "星空", "远行"] : ["旅行", "日常", "自然", "短篇"], actors: ["旅人"], works: ["风景手记"], related_list: [],
     description: "这是一份完全虚构的界面测试资料。旅人沿着海岸与山间小路，记录日常生活里温柔而细小的发现，用于检查标题、简介、评分与阅读布局。",
     series: clone(series), chapters: 3, total_photos: 6, total_views: 12580, likes: 328, comment_total: 2,
     addtime: stamp, update_at: stamp, cover_url: cover(id), liked: false, is_favorite: false,
 });
 const comics = Array.from({ length: 12 }, (_, index) => album(100100 + index));
 const categories = [{ type: "slug", slug: "daily", name: "日常", sub_categories: [{ CID: "11", slug: "travel", name: "旅行" }, { CID: "12", slug: "nature", name: "自然" }] }, { type: "slug", slug: "short", name: "短篇", sub_categories: [] }];
-const profile = {
-    summary: "示例偏好更倾向旅行、自然与生活观察题材。这里的评分、标签和作者均为虚构测试内容。",
-    rating_summary: { mean: 7.8, sample_count: 12, confidence: 0.82 },
-    preferred_tags: ["旅行", "自然", "日常"], preferred_authors: ["示例作者"],
-    structured_stats: { evidence_count: 24, rated_count: 12, interaction_count: 48 },
-};
-const recommendations = comics.slice(0, 4).map((item, index) => ({ ...item, title: item.name, authors: item.author, score: 8.8 - index * .4, reason: "自然题材与日常观察符合示例偏好，叙事轻松，适合继续阅读。", evidence: [{ label: "具体设定", source: "comment:0", quote: "自然观察的独特设定" }], score_breakdown: [{ key: "preference", label: "喜欢门槛匹配", contribution: 65 }, { key: "novelty", label: "探索", contribution: 3 }] }));
-const run = { id: 1, status: "success", created_at: stamp, recommendations };
 const user = { uid: "1", username: "本地测试", level_name: "体验用户" };
 const account = { configured: true, authenticated: true, username: user.username, user };
-const semanticText = '内容概括：旅人沿海岸与山间记录自然观察。\n参与推荐的内容特征：\n具体设定：0.8（读者评论）\n依据：自然观察的独特设定';
-const semanticState = comic => ({ status: comic?.rating != null ? "ready" : "unrated", current: comic?.rating != null, text: comic?.rating != null ? semanticText : "" });
-const semanticOverview = () => { const items = [...memory.values()].filter(c => c.rating != null).map(c => ({ id: c.id, title: c.title, rating: c.rating, ...semanticState(c) })); return { configured: true, counts: {ready:items.length,queued:0,running:0,error:0,missing:0,stale:0,unconfigured:0}, items: [] }; };
-const memory = new Map(comics.slice(0, 3).map((item, i) => [item.id, { ...item, title: item.name, authors: item.author, rating: 8 - i, review: "虚构的本地阅读评价", tag_feedback: { "旅行": 1 } }]));
+const ratings = new Map(comics.slice(0, 3).map((item, i) => [item.id, { id: item.id, title: item.name, authors: item.author, cover_url: item.cover_url, rating: 8 - i }]));
+let searchHistory = [{ query: "旅行", savedAt: stamp * 1000 }, { query: "山间来信", savedAt: stamp * 1000 - 1 }];
+let preferences = { tags: { "旅行": "like", "自然": "fond", "短篇": "avoid", "日常": "dislike" }, authors: { "示例作者": "like", "观察工作室": "dislike" } };
 
 // Default stubs keep newly added calls local; named fakes below supply useful shapes.
 for (const object of [jmApi, localRuntime]) {
@@ -75,7 +66,7 @@ Object.assign(jmApi, {
     getSearchResults: constant({ content: comics, total: 12 }), getFilteredComics: async (_query, requestedPage) => ({ content: requestedPage > 1 ? [] : clone(comics), total: 12 }),
     getLatestContent: constant({ content: comics, total: 12 }),
     login: constant(user), ensureAuthenticated: constant(user), clearAuthServer() {},
-    getFavorites: constant({ list: comics.slice(0, 6), total: 6, folder_list: [{ FID: "0", name: "全部收藏" }] }), getAllFavorites: constant(comics.slice(0, 6)),
+    getFavorites: constant({ list: comics.slice(0, 6), total: 6, folder_list: [{ FID: "0", name: "全部收藏" }] }),
     getFavoriteIds: async () => new Set(), getFavoriteState: constant(false), getLikeState: constant(false),
     updateFavoriteState: async (_id, saved) => ({ saved }), toggleLike: constant({ liked: true }), setLikeState() {},
     getAlbumTrackingState: constant(false), toggleAlbumTracking: constant({ tracked: true }),
@@ -84,40 +75,36 @@ Object.assign(jmApi, {
     getNotifications: constant({ total: 3, list: [{ id: 1, title: "阅读记录已同步", content: "这是一条虚构通知，用于检查已读状态与长文本排版。", read: false, date: "2026-09-05" }, { id: 2, title: "示例连载更新", content: "旅途手记更新了一个新章节，可以从右侧追踪列表继续阅读。", read: false, date: "2026-09-04" }, { id: 3, title: "欢迎回来", content: "所有内容均来自本机测试数据。", read: true, date: "2026-09-03" }] }),
     getAlbumTrackingList: constant({ item: comics.slice(0, 4), totalCnt: 4 }),
 });
-const fixtureJobs = new Map();
+const fixtureCache = new Map();
 Object.assign(localRuntime, {
     getAccountSummary: constant(account), loginAccount: constant(user), ensureAccountSession: constant(user),
-    getAiConfig: constant({ configured: true, model: "fixture-model", base_url: "https://example.invalid/v1", api_key_configured: true, use_ai_translation: true }),
-    getEmbeddingConfig: constant({ configured: true, model: "fixture-embedding", api_key_configured: true, dimension: 1024 }),
-    getEmbeddingStatus: constant({ available: true, model: "fixture-embedding", dimension: 1024 }),
-    testAiConfig: constant({ success: true }), testEmbeddingConfig: constant({ success: true }),
-    translateTitleWithAi: async (title) => ({ translated: title, translation: title, title }),
-    getLocalComic: async (id) => ({ comic: memory.get(String(id)) || null, content_analysis: semanticState(memory.get(String(id))) }),
-    getContentAnalysis: async id => id ? semanticState(memory.get(String(id))) : semanticOverview(),
-    updateContentAnalysis: async () => semanticOverview(),
-    saveLocalComic: async (value) => { const comic = { ...memory.get(String(value.id)), ...clone(value) }; memory.set(String(value.id), comic); return { comic: clone(comic), saved: true, content_analysis: semanticState(comic) }; },
-    getLocalComics: async () => ({ comics: [...memory.values()] }), getComicFeedbackStates: constant({ states: {} }),
-    syncLocalFavorites: constant({ synced: 6 }),
-    getAiProfile: constant({ stats: { favorites: 6, rated: 12, tag_feedback: 18, interactions: 48 }, profile }), generateAiProfile: constant({ profile }),
-    getRecommendedIds: constant({ ids: [] }), getDiscoveryExcludedIds: constant({ ids: [] }),
-    getRecommendationHistory: constant({ runs: [run] }), generateRecommendations: constant(run),
-    getRecommendationJobs: async () => ({ jobs: [...fixtureJobs.values()] }),
-    getRecommendationJob: async id => fixtureJobs.get(id) || { id, accepted: true, status: "success", result: run, prepared: 0 },
-    submitRecommendationJob: async ({ id }) => {
-        const job = { id, accepted: true, status: "success", result: run, prepared: 3, failed: 0, remaining: 0 };
-        fixtureJobs.set(id, job); return job;
+    getTranslationConfig: constant({ configured: true, model: "fixture-model", base_url: "https://example.invalid/v1", api_key_masked: "sk-…test", use_ai_translation: true }),
+    testTranslationConfig: constant({ ok: true, model: "fixture-model" }),
+    translateTitle: async (title) => ({ translation: `${title}（译）`, model: "fixture-model" }),
+    // Groups only the first 8 so the trailing "未整理" section is exercised too.
+    organizeComics: async (items) => ({ model: "fixture-model", groups: [
+        { title: "示例系列上篇", items: items.slice(0, 5).map((item, index) => ({ id: item.id, note: `第 ${index + 1} 话` })) },
+        { title: "其他", items: items.slice(5, 8).map((item) => ({ id: item.id, note: "" })) },
+    ] }),
+    getRating: async (id) => clone(ratings.get(String(id)) ?? null),
+    getRatings: async () => clone([...ratings.values()]),
+    saveRating: async (value) => {
+        if (value.rating === null) { ratings.delete(String(value.id)); return null; }
+        ratings.set(String(value.id), clone(value)); return clone(value);
     },
-    cancelRecommendationJob: async id => ({ id, status: "cancelled" }),
-    planContent: async candidates => ({ configured: true, training: [], candidates }),
-    prepareContent: constant({ status: "ready" }),
-    saveRecommendationFeedback: async ({comic_id, action, reason, comic}) => {
-        const record = { ...comic, ...memory.get(String(comic_id)) };
-        const states = { ...record.interest_feedback };
-        if (action === "clear") delete states[reason]; else states[reason] = { action, reason };
-        record.interest_feedback = states; memory.set(String(comic_id), record);
-        return { saved: true, interest_feedback: clone(states) };
-    }, recordInteraction: async (value) => { fixture.stubbedCalls.push(value.event_type); return { saved: true }; },
-    readCache: constant(null), writeCache: constant(null), getWebChapterNames: constant({ chapters: series }),
+    getPreferences: async () => clone(preferences),
+    savePreference: async ({ kind, name, level, previous }) => {
+        const group = { ...preferences[`${kind}s`] };
+        if (previous && previous !== name) delete group[previous];
+        if (level === null) delete group[name]; else group[name] = level;
+        preferences = { ...preferences, [`${kind}s`]: group };
+        return clone(preferences);
+    },
+    getSearchHistory: async () => clone(searchHistory),
+    recordSearch: async (query) => { searchHistory = [{ query, savedAt: Date.now() }, ...searchHistory.filter((item) => item.query !== query)]; return clone(searchHistory); },
+    removeSearchHistory: async (query) => { searchHistory = query == null ? [] : searchHistory.filter((item) => item.query !== query); return clone(searchHistory); },
+    readCache: async (kind, key) => clone(fixtureCache.get(`${kind}/${key}`) ?? null),
+    writeCache: async (kind, key, data) => { if (kind === "organize") fixtureCache.set(`${kind}/${key}`, clone(data)); }, getWebChapterNames: constant({ chapters: series }),
 });
 authSession.setProfile(user);
 authSession.configured = true;
@@ -129,12 +116,19 @@ authSession.configure = async () => { authSession.dispatchChange(); return user;
 authSession.clearLocalConfig = async () => { authSession.configured = false; authSession.user = null; authSession.dispatchChange(); };
 let readingHistory = comics.slice(0, 5).map((item) => ({...item, savedAt: stamp * 1000}));
 let randomHistory = comics.slice(0, 5).map((item) => ({ ...item, savedAt: stamp * 1000 }));
+let watchLater = comics.slice(6, 9).map((item) => ({ ...item, savedAt: stamp * 1000 }));
+const libraryChanged = () => window.dispatchEvent(new CustomEvent("jm-library-change"));
 Object.assign(libraryStore, {
     init: async () => {},
     getHistory: () => clone(readingHistory), async recordHistory() {}, async clearHistory() { readingHistory = []; },
     getRandomHistory: () => clone(randomHistory),
     recordRandomHistory: (item) => { randomHistory = [item, ...randomHistory.filter((old) => old.id !== item.id)].slice(0, 20); return item; },
     clearRandomHistory: () => { randomHistory = []; },
+    getWatchLater: () => clone(watchLater),
+    isWatchLater: (id) => watchLater.some((item) => String(item.id) === String(id)),
+    addWatchLater: async (item) => { watchLater = [{ ...item, savedAt: Date.now() }, ...watchLater.filter((old) => old.id !== item.id)]; libraryChanged(); },
+    removeWatchLater: async (id) => { watchLater = watchLater.filter((item) => String(item.id) !== String(id)); libraryChanged(); },
+    clearWatchLater: async () => { watchLater = []; libraryChanged(); },
 });
 const current = new URL(location.href);
 if ((page === "reader" || page === "chapter") && !current.searchParams.has("id")) {
@@ -168,7 +162,7 @@ async function runChecks(shellOnly = false) {
             // Safari may suspend animation timelines in an automated/background window.
             menu.closest(".sheet-panel").getAnimations().forEach((animation) => animation.finish());
             const panel = menu.closest(".sheet-panel").getBoundingClientRect();
-            check("菜单覆盖全屏且导航完整", toggle.getAttribute("aria-expanded") === "true" && menu.querySelectorAll("a").length === 7 && Math.abs(panel.left) < 1 && Math.abs(panel.width - innerWidth) < 1 && panel.height >= innerHeight - 1 && document.body.style.position === "fixed", JSON.stringify({left: panel.left, width: panel.width, height: panel.height, viewport: [innerWidth, innerHeight], position: document.body.style.position}));
+            check("菜单覆盖全屏且导航完整", toggle.getAttribute("aria-expanded") === "true" && menu.querySelectorAll("a").length === 6 && Math.abs(panel.left) < 1 && Math.abs(panel.width - innerWidth) < 1 && panel.height >= innerHeight - 1 && document.body.style.position === "fixed", JSON.stringify({left: panel.left, width: panel.width, height: panel.height, viewport: [innerWidth, innerHeight], position: document.body.style.position}));
             menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
             check("Escape 收起菜单并恢复焦点", !menu.closest(".sheet").classList.contains("is-open") && toggle.getAttribute("aria-expanded") === "false" && document.activeElement === toggle);
             click(".mobile-header [data-open-search]"); await sleep(80);
@@ -185,7 +179,7 @@ async function runChecks(shellOnly = false) {
             const panel = sheet.querySelector('.sheet-panel');
             check("账号弹层锁定背景滚动与焦点", document.body.style.position === "fixed" && document.querySelector("main").inert);
             sheet.querySelector('.auth-error').textContent = `测试错误：https://example.invalid/${"long-message-".repeat(60)}`;
-            sheet.querySelector('[data-block="llm"]').open = true;
+            sheet.querySelector('[data-block="translation"]').open = true;
             await sleep(100);
             const rect = panel.getBoundingClientRect();
             check("长文本与配置表单保持视口内", panel.scrollWidth <= panel.clientWidth + 1 && rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1);
@@ -203,20 +197,22 @@ async function runChecks(shellOnly = false) {
         } else if (page === "chapter") {
             check("详情与章节完整", !!document.querySelector('.detail-title')?.textContent && document.querySelectorAll('.chapter-item').length === 3);
             check("阅读链接同页打开", document.querySelector('[data-start-read]').target === '_self');
-            click('[data-score="9"]');
-            const review = document.querySelector('.rating-editor textarea'); review.value = '虚构测试评语';
-            click('[data-save-rating]'); await sleep(100);
-            check("评价可保存并读回", (await localRuntime.getLocalComic('100100')).comic.rating === 9);
-            check("评分后的内容分析可读且无原始JSON", document.querySelector("[data-summary-text]").textContent.includes("内容概括") && !document.querySelector("[data-summary-text]").textContent.includes("assertions"));
-            click('[data-feedback-reason="cover"] [data-interest="interested"]'); await sleep(80);
-            click('[data-feedback-reason="title"] [data-interest="not_interested"]'); await sleep(80);
-            let saved = (await localRuntime.getLocalComic('100100')).comic;
-            check("不同兴趣维度独立保存", saved.interest_feedback.cover?.action === 'interested' && saved.interest_feedback.title?.action === 'not_interested');
-            click('[data-feedback-reason="cover"] [data-interest="interested"]'); await sleep(80);
-            saved = (await localRuntime.getLocalComic('100100')).comic;
-            check("再次点击只清除对应维度", !saved.interest_feedback.cover && saved.interest_feedback.title?.action === 'not_interested');
+            for (let wait = 0; wait < 40 && document.querySelectorAll('.preview-page[data-state="ready"] canvas').length < 3; wait++) await sleep(50);
+            const previews = [...document.querySelectorAll('.preview-page')];
+            check("详情页三页预览已还原", previews.length === 3 && previews.every((tile) => tile.dataset.state === "ready" && tile.querySelector('canvas')?.width > 0), previews.map((tile) => tile.dataset.state).join());
+            check("预览跳转到对应页", previews.map((tile) => new URL(tile.href).searchParams.get('page')).join() === "2,4,5");
+            check("详情标签按偏好着色", !!document.querySelector('.detail-tags .tag[data-preference="like"]'));
+            check("详情作者按偏好着色", !!document.querySelector('.detail-authors .author-name[data-preference="like"]') && !!document.querySelector('.detail-authors .author-name[data-preference="dislike"]'));
+            check("详情页不再有兴趣反馈与评语", !document.querySelector('[data-interest], .rating-editor textarea, [data-summary-text]'));
+            click('.rating-editor [data-score="9"]'); await sleep(100);
+            check("评分点选即保存", (await localRuntime.getRating('100100'))?.rating === 9 && document.querySelector('.rating-editor [data-score="9"]').getAttribute('aria-pressed') === 'true');
             click('[data-translate]'); await sleep(80);
             check("标题翻译可切换", document.querySelector('[data-translate]').getAttribute('aria-pressed') === 'true');
+            const later = document.querySelector('.detail-actions [data-watch-later]');
+            click('.detail-actions [data-watch-later]'); await sleep(80);
+            check("详情页可加入稍后再看", libraryStore.isWatchLater('100100') && later.getAttribute('aria-pressed') === 'true');
+            click('.detail-actions [data-watch-later]'); await sleep(80);
+            check("详情页可移出稍后再看", !libraryStore.isWatchLater('100100') && later.getAttribute('aria-pressed') === 'false');
             for (const action of ['favorite','like','track']) { click(`[data-account-action="${action}"]`); await sleep(80); check(`${action} 操作可用`, document.querySelector(`[data-account-action="${action}"]`).getAttribute('aria-pressed') === 'true'); }
             check("评论显示", document.querySelectorAll('.comment-item').length === 2);
         } else if (page === "reader") {
@@ -236,19 +232,15 @@ async function runChecks(shellOnly = false) {
             document.querySelector('.reader-images').dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
             check("空格恢复阅读工具", !document.body.classList.contains('reader-focus') && !document.querySelector('.reader-tools').inert);
             click('[data-more-comments]'); await sleep(80); check("本话评论按需载入", document.querySelectorAll('.comment-item').length === 2);
-            check("阅读开始先于进度事件", fixture.stubbedCalls.indexOf('read_start') >= 0 && fixture.stubbedCalls.indexOf('read_progress') > fixture.stubbedCalls.indexOf('read_start'));
+            check("阅读页保留评分", !!document.querySelector('.reader-rating [data-score="10"]'));
         } else if (page === "library") {
             click('[data-view="ratings"]'); await sleep(100); check("读取本地评价", document.querySelectorAll('.library-grid .comic-card').length === 3);
             click('[data-rating="8"]'); check("评分筛选准确", document.querySelectorAll('.library-grid .comic-card').length === 1);
             click('[data-view="history"]'); check("阅读历史可见", document.querySelectorAll('.library-grid .comic-card').length === 5);
+            click('[data-view="later"]'); check("稍后再看可见", document.querySelectorAll('.library-grid .comic-card').length === 3 && [...document.querySelectorAll('.library-grid .later-toggle')].every((button) => button.getAttribute('aria-pressed') === 'true'));
+            click('.library-grid .later-toggle'); await sleep(80); check("书架卡片可移出稍后再看", document.querySelectorAll('.library-grid .comic-card').length === 2);
             click('[data-view="random"]'); check("随机历史可见", document.querySelectorAll('.library-grid .comic-card').length === 5);
             click('[data-view="favorites"]'); await sleep(100); check("账号收藏可见", document.querySelectorAll('.library-grid .comic-card').length === 6);
-        } else if (page === "ai") {
-            const form = document.querySelector('.recommend-form'); form.elements.candidate_count.value = 3; form.elements.limit.value = 3;
-            form.requestSubmit(); await sleep(250);
-            check("推荐生成并显示评分依据", document.querySelectorAll('.ai-result-item').length > 0 && !!document.querySelector('.score-breakdown'));
-            check("内容证据可读", document.querySelector(".recommend-results").textContent.includes("自然观察的独特设定"));
-            click("[data-run]"); check("新格式历史可读", document.querySelectorAll(".ai-result-item").length > 0);
         } else if (page === "messages") {
             check("通知与追更分别显示", document.querySelectorAll('.notification-item').length === 3 && document.querySelectorAll('.tracking-item').length === 4);
             click('.notification-item.unread'); await sleep(50); check("标记已读生效", document.querySelectorAll('.notification-item.unread').length === 1);
@@ -260,11 +252,69 @@ async function runChecks(shellOnly = false) {
             check("单章过滤展示空状态", !document.querySelector('[data-results] .comic-card') && !!document.querySelector('[data-results] .state'));
             click(innerWidth < 700 ? '[data-sheet-reset]' : '[data-filter-reset]'); await sleep(250); check("重置恢复列表", document.querySelectorAll('[data-results] .comic-card').length === 12);
             if (innerWidth < 700) click('[data-sheet="filters"] .sheet-close');
+            if (page === "search") {
+                const input = document.querySelector('.listing-search input'); input.value = ""; input.focus(); input.dispatchEvent(new Event('input')); await sleep(50);
+                const pop = document.querySelector('.listing-search .search-history-pop');
+                const arrived = new URLSearchParams(location.search).get("sq");
+                check("进入搜索页即记录关键词", !arrived || (await localRuntime.getSearchHistory())[0]?.query === arrived);
+                const before = pop.querySelectorAll('[data-history-pick]').length;
+                check("搜索框显示搜索记录", !pop.hidden && before >= 2);
+                click('[data-history-remove="山间来信"]', pop); await sleep(50);
+                check("可删除单条搜索记录", (await localRuntime.getSearchHistory()).length === before - 1 && pop.querySelectorAll('[data-history-pick]').length === before - 1);
+                input.value = "不存在"; input.dispatchEvent(new Event('input')); check("搜索记录按输入筛选", pop.hidden);
+                input.blur(); await sleep(250); input.value = "";
+                click('[data-organize]'); await sleep(150);
+                const organized = document.querySelector('[data-organized]');
+                check("AI 整理分栏显示", organized.querySelectorAll('.organized-group:not([hidden])').length === 3 && organized.querySelectorAll('.comic-card').length === 12 && document.querySelector('[data-results]').hidden);
+                check("整理备注显示在卡片上", organized.querySelector('.rich-note')?.textContent === "第 1 话");
+                check("未覆盖作品进入未整理栏目", organized.querySelectorAll('[data-unorganized] .comic-card').length === 4 && !document.querySelector('[data-feed]').hidden);
+                click('[data-reorganize]', organized); await sleep(150);
+                check("可重新整理", !document.querySelector('[data-organized]').hidden && !!document.querySelector('[data-organized] [data-reorganize]'));
+                click('[data-organize]'); check("可返回原始列表", document.querySelector('[data-organized]').hidden && !document.querySelector('[data-results]').hidden);
+                const serial = document.querySelector('[data-hide-serial]');
+                serial.checked = true; serial.dispatchEvent(new Event('change', { bubbles: true })); await sleep(250);
+                serial.checked = false; serial.dispatchEvent(new Event('change', { bubbles: true })); await sleep(300);
+                check("同一关键词自动使用整理缓存", !document.querySelector('[data-organized]').hidden && document.querySelectorAll('[data-organized] .organized-group:not([hidden]) .comic-card').length === 12);
+            }
         } else if (page === "index") {
             check("随机与书架完整", !!document.querySelector('[data-random-open]').href && document.querySelectorAll('.shelf').length === 2);
+            check("书架卡片在可见前不请求资料", document.querySelector('.shelf:last-child .rich-card').dataset.details === "pending");
+            document.querySelector('.shelf .rich-card').scrollIntoView({ block: "center" });
+            for (let wait = 0; wait < 40 && !document.querySelector('.rich-card[data-details="ready"]'); wait++) await sleep(50);
+            const richCard = document.querySelector('.rich-card[data-details="ready"]');
+            check("书架大卡片显示统计", !!richCard && richCard.querySelector('[data-detail="views"]').textContent === "1.3万" && richCard.querySelector('[data-detail="pages"]').textContent === "6");
+            check("卡片标签按偏好着色并附说明", !!richCard?.querySelector('.tag[data-preference="like"]') && !!richCard?.querySelector('.tag[data-preference="dislike"]') && !!richCard?.querySelector('.author-name[data-preference="like"]') && !!document.querySelector('.shelves > .tag-legend'));
+            const tagRows = [...document.querySelectorAll('.rich-card[data-details="ready"] .rich-tags')].map((list) => new Set([...list.children].filter((tag) => !tag.hidden).map((tag) => tag.offsetTop)).size);
+            check("卡片标签最多两行", tagRows.length > 1 && tagRows.every((rows) => rows <= 2), tagRows.join());
+            const longTags = document.querySelector('.rich-card[data-comic-id="100101"][data-details="ready"] .rich-tags');
+            check("超出两行的标签折叠为计数", !!longTags?.querySelector('.tag-more') && [...longTags.children].some((tag) => tag.hidden));
+            const firstCard = document.querySelector('.rich-card');
+            check("标签横跨整张卡片", Math.abs(firstCard.querySelector('.rich-tags').getBoundingClientRect().left - firstCard.querySelector('.cover').getBoundingClientRect().left) < 1);
+            const side = [...document.querySelectorAll('.home-side > .continue')];
+            check("稍后再看位于继续阅读上方", side[0]?.classList.contains('later') && !side[0].hidden && side[0].querySelectorAll('.later-item').length === 3 && !side[1].hidden);
+            check("卡片作者为搜索链接", !!richCard?.querySelector('.comic-meta a.author-name[href*="search.html?sq="]') && !!document.querySelector('.continue-meta a.author-name'));
+            const shelfCard = document.querySelector('.shelf .rich-card[data-comic-id="100100"]');
+            click('.later-toggle', shelfCard); await sleep(80);
+            check("卡片可加入稍后再看", document.querySelectorAll('.later-item').length === 4 && shelfCard.querySelector('.later-toggle').getAttribute('aria-pressed') === 'true');
+            click('.later-item [data-later-remove]'); await sleep(80);
+            check("首页可移除稍后再看", document.querySelectorAll('.later-item').length === 3 && shelfCard.querySelector('.later-toggle').getAttribute('aria-pressed') === 'false');
+            check("随机作品标签按偏好着色", !!document.querySelector('[data-random-tags] .tag[data-preference="avoid"]'));
             const id = document.querySelector('[data-random-id]').textContent; click('[data-random-prev]'); await sleep(80); check("随机历史可翻页", document.querySelector('[data-random-id]').textContent !== id);
         } else if (page === "latest") check("最新列表去重", document.querySelectorAll('[data-results] .comic-card').length === 12);
-        else if (page === "setting") { click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true'); click("[data-update-content-analysis]"); await sleep(80); check("设置不展示已完成项目", !document.querySelector("[data-analysis-list] details") && document.querySelector("[data-analysis-list]").textContent.includes("没有待处理")); }
+        else if (page === "setting") {
+            click('#settings-reading [data-source="2"]'); check("图片线路可切换", document.querySelector('#settings-reading [data-source="2"]').getAttribute('aria-checked') === 'true');
+            await sleep(50);
+            const tags = document.querySelector('#settings-tag-preferences');
+            check("标签偏好按四类分组", tags.querySelectorAll('.preference-group').length === 4 && tags.querySelectorAll('.preference-chip').length === 4);
+            check("作者偏好只有喜欢与不喜欢", document.querySelectorAll('#settings-author-preferences .preference-group').length === 2);
+            tags.querySelector('input[name="name"]').value = '港口'; click('[data-level="fond"]', tags); click('[data-preference-submit]', tags); await sleep(50);
+            check("可新增标签", (await localRuntime.getPreferences()).tags['港口'] === 'fond' && !!tags.querySelector('[data-edit="港口"]'));
+            click('[data-edit="港口"]', tags); tags.querySelector('input[name="name"]').value = '灯塔'; click('[data-level="dislike"]', tags); click('[data-preference-submit]', tags); await sleep(50);
+            const renamed = (await localRuntime.getPreferences()).tags;
+            check("可编辑标签名称与分类", renamed['灯塔'] === 'dislike' && !('港口' in renamed));
+            click('[data-remove="灯塔"]', tags); await sleep(50);
+            check("可删除标签", !('灯塔' in (await localRuntime.getPreferences()).tags) && !tags.querySelector('[data-edit="灯塔"]'));
+        }
         else if (page === "history-migration") check("历史迁移完成", document.querySelector('[data-migration-status]').textContent.includes('已合并'));
         check("操作后页面不横向溢出", document.documentElement.scrollWidth <= innerWidth + 1);
         check("无脚本异常或意外请求", !fixture.errors.length && !fixture.blockedRequests.length, JSON.stringify(fixture.errors));

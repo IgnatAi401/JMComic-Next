@@ -1,6 +1,6 @@
 import { jmApi } from "../api/JmcomicApi.js";
 
-export const isSingleChapterComic = (album) => {
+const isSingleChapterComic = (album) => {
     const chapters = Array.isArray(album?.series) ? album.series.filter(Boolean) : [];
     return chapters.length <= 1;
 };

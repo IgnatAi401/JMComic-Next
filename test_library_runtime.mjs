@@ -8,27 +8,24 @@ const source = readFileSync(new URL("./project/src/pages/library.js", import.met
     .replace(/new LibraryPage\(\)\.init\(\)\.catch\([^\n]+\);/, "");
 const LibraryPage = vm.runInNewContext(`${source}\nLibraryPage;`);
 
-test("rating filters include every matching comic and separate feedback without scores", () => {
+test("rating filters include every comic with the selected score", () => {
     const page = new LibraryPage();
     page.localRatings = [
         ...Array.from({ length: 5001 }, (_, id) => ({ id, rating: 10 })),
         { id: "low", rating: 1 },
-        { id: "review", rating: null, review: "评语" },
-        { id: "tags", tag_feedback: { test: 1 } },
     ];
-    assert.equal(page.filteredRatings().length, 5004);
+    assert.equal(page.filteredRatings().length, 5002);
     page.ratingFilter = "10";
     assert.equal(page.filteredRatings().length, 5001);
     page.ratingFilter = "1";
     assert.equal(page.filteredRatings()[0].id, "low");
     page.ratingFilter = "5";
     assert.equal(page.filteredRatings().length, 0);
-    page.ratingFilter = "unrated";
-    assert.equal(page.filteredRatings().length, 2);
     page.ratingFilters = { innerHTML: "" };
     page.renderRatingFilters();
     assert.match(page.ratingFilters.innerHTML, /10 分<span>5001<\/span>/);
-    assert.match(page.ratingFilters.innerHTML, /data-rating="unrated" class="active" aria-pressed="true"/);
+    assert.match(page.ratingFilters.innerHTML, /data-rating="5" class="active" aria-pressed="true">5 分<span>0<\/span>/);
+    assert.doesNotMatch(page.ratingFilters.innerHTML, /unrated|未评分/);
 });
 
 const storeSource = readFileSync(new URL("./project/src/data/LibraryStore.js", import.meta.url), "utf8")
@@ -71,7 +68,7 @@ test("concurrent legacy edits remain and failed clear does not erase loaded hist
     assert.equal(store.getHistory()[0].id, "1");
 });
 test("writes are serialized and another browser reads the same backend history", async () => {
-    const lists = { reading: [], random: [] };
+    const lists = { reading: [], random: [], later: [] };
     const request = async (url, options) => {
         const kind = url.split("=")[1];
         if (options?.method === "DELETE") lists[kind] = [];
@@ -87,4 +84,24 @@ test("writes are serialized and another browser reads the same backend history",
     const third = createStore(request, new Map());
     await third.init();
     assert.equal(third.getHistory().length, 0);
+});
+test("watch later adds, reports membership and removes a single comic", async () => {
+    const lists = { reading: [], random: [], later: [] };
+    const calls = [];
+    const store = createStore(async (url, options) => {
+        const params = new URLSearchParams(url.split("?")[1]);
+        const kind = params.get("kind");
+        calls.push([options?.method || "GET", url]);
+        if (options?.method === "DELETE") lists[kind] = params.has("id") ? lists[kind].filter((item) => item.id !== params.get("id")) : [];
+        else if (options?.body) lists[kind] = [...options.body.items, ...lists[kind]];
+        return { items: [...lists[kind]] };
+    }, new Map());
+    await store.addWatchLater({ id: 7, name: "示例", author: ["作者"] });
+    await store.addWatchLater({ id: 8 });
+    assert.equal(store.isWatchLater("7"), true);
+    assert.deepEqual(Array.from(store.getWatchLater()[1].author), ["作者"]);
+    await store.removeWatchLater(7);
+    assert.equal(store.isWatchLater("7"), false);
+    assert.equal(store.getWatchLater().length, 1);
+    assert.ok(calls.some(([method, url]) => method === "DELETE" && url.endsWith("kind=later&id=7")));
 });

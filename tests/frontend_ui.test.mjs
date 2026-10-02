@@ -3,42 +3,6 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const { prepareContent } = await import('data:text/javascript;base64,' + Buffer.from(
-    await readFile(new URL('../project/src/local/ContentPreparation.js', import.meta.url), 'utf8')
-).toString('base64'));
-
-test('content preparation balances training/candidates, deduplicates and respects budget', async () => {
-    const prepared = [], requests = [];
-    const result = await prepareContent({
-        runtime: {
-            planContent: async () => ({ configured: true,
-                training: [{ id: '1' }, { id: '2' }], candidates: [{ id: '1' }, { id: '3' }] }),
-            prepareContent: async item => { prepared.push(item); return { status: 'ready' }; },
-        },
-        api: { getComicComments: async (id, page) => { requests.push([id, page]); return { total: 100, list: [{ content: 'test' }] }; } },
-        candidates: [], budget: 2, stopped: () => false, progress() {},
-    });
-    assert.equal(prepared.length, 2);
-    assert.equal(new Set(prepared.map(r => r.id)).size, 2);
-    assert.equal(requests.length, 4);
-    assert.equal(result.remaining, 1);
-});
-
-test('content failure is recorded without discarding candidates; stop launches no further calls', async () => {
-    let stopped = false, calls = 0;
-    const plan = { configured: true, training: [], candidates: [{ id: '1' }, { id: '2' }] };
-    const runtime = { planContent: async () => plan, prepareContent: async item => {
-        assert.equal(item.comments_status, 'error'); calls++; return { status: 'error' };
-    } };
-    const api = { getComicComments: async () => { throw Error('network'); } };
-    const result = await prepareContent({ runtime, api, candidates: [], budget: 1, stopped: () => stopped, progress() {} });
-    assert.equal(calls, 1);
-    assert.equal(result.failed, 1);
-    stopped = true;
-    await prepareContent({ runtime, api, candidates: [], budget: 2, stopped: () => stopped, progress() {} });
-    assert.equal(calls, 1);
-});
-
 class Element {
     style = {};
     dataset = {};
@@ -105,6 +69,7 @@ async function environment(file, bootstrap = '') {
         renderPageError() {}, localRuntime: {}, openInNewPage() {},
         escapeHtml: value => String(value ?? ''), comicPayload: album => ({id:String(album.id)}),
         textList: value => Array.isArray(value) ? value : [], confirmAction: async () => true,
+        LEVEL_LABELS: { like: '喜欢', fond: '较喜欢', avoid: '软回避', dislike: '不喜欢' }, preferenceMaps: data => ({ tags: new Map(Object.entries(data?.tags || {})), authors: new Map(Object.entries(data?.authors || {})) }),
         EagerComicImageLoader: class {},
     };
     const context = vm.createContext({ document, window, location: { pathname: '/messages.html' },
@@ -283,64 +248,44 @@ test('feed retry keeps the failed page number and prevents concurrent duplicate 
     assert.deepEqual(requested,[1,1]); assert.equal(feed.done,true); assert.equal(feed.failed,false);
 });
 
-test('interest feedback clears only the selected dimension and keeps other states', async () => {
-    const {exports,localRuntime} = await environment('ui/interest.js');
-    const feedback = new exports.InterestFeedback(new Element(),{id:'42'});
-    feedback.states={cover:{action:'interested'},title:{action:'not_interested'}};
-    const requests=[];
-    localRuntime.saveRecommendationFeedback=async value => {
-        requests.push(value);
-        return {interest_feedback:{title:{action:'not_interested'}}};
-    };
-    await feedback.save('cover','interested');
-    assert.equal(requests[0].action,'clear'); assert.equal(requests[0].reason,'cover');
-    assert.equal(feedback.states.cover,undefined); assert.equal(feedback.states.title.action,'not_interested');
-});
-
-test('failed interest loads do not overwrite an unknown saved state', async () => {
-    const {exports,localRuntime} = await environment('ui/interest.js');
-    const root=new Element();const feedback=new exports.InterestFeedback(root,{id:'42'});
-    localRuntime.getLocalComic=async()=>{throw new Error('offline');};
-    let writes=0; localRuntime.saveRecommendationFeedback=async()=>{writes++;};
-    await feedback.load(); await feedback.save('cover','interested');
-    assert.equal(writes,0); assert.equal(root.querySelector('[data-retry-interest]').hidden,false);
-    localRuntime.getLocalComic=async()=>({comic:{interest_feedback:{cover:{action:'interested'}}}});
-    await feedback.load();assert.equal(feedback.loadFailed,false);assert.equal(feedback.states.cover.action,'interested');
-});
-
-test('a failed rating save preserves the score, review and tag draft for retry', async () => {
+test('a failed rating save keeps the previous score and reports the error', async () => {
     const {exports,localRuntime} = await environment('ui/rating.js');
     const root=new Element(); const editor=new exports.RatingEditor(root,{id:'42'});
-    editor.score=9; editor.tagFeedback={travel:1};root.querySelector('textarea').value='my review';
-    localRuntime.saveLocalComic=async()=>{throw new Error('offline');};
-    await editor.save();
-    assert.equal(editor.score,9);assert.equal(editor.tagFeedback.travel,1);assert.equal(root.querySelector('textarea').value,'my review');assert.equal(editor.saving,false);
+    editor.score=6;
+    localRuntime.saveRating=async()=>{throw new Error('offline');};
+    await editor.save(9);
+    assert.equal(editor.score,6); assert.equal(editor.saving,false);
     assert.match(root.querySelector('[data-rating-status]').textContent,/offline/);
 });
 
-test('rating summary displays complete model text safely and labels stale output', async () => {
-    const {exports} = await environment('ui/rating.js');
-    const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
-    editor.watchAnalysis({status:'ready', current:true, text:'评价分析\n<img src=x onerror=alert(1)>\n完整返回'});
-    assert.equal(root.querySelector('[data-summary-text]').textContent, '评价分析\n<img src=x onerror=alert(1)>\n完整返回');
-    assert.equal(root.querySelector('[data-summary-text]').innerHTML, '');
-    editor.watchAnalysis({status:'stale', current:false, text:'旧分析'});
-    assert.match(root.querySelector('[data-summary-text]').textContent, /上次分析/);
-    editor.watchAnalysis({status:'unrated', current:false, text:''});
-    assert.equal(root.querySelector('[data-summary-text]').textContent, '');
+test('picking a score saves it immediately and clearing removes it', async () => {
+    const {exports,localRuntime} = await environment('ui/rating.js');
+    const root=new Element(); const editor=new exports.RatingEditor(root,{id:'42'});
+    const requests=[];
+    localRuntime.saveRating=async value => { requests.push(value); return value.rating === null ? null : {...value}; };
+    await editor.save(8); await editor.save(8); await editor.save(null);
+    assert.deepEqual(requests.map(value => value.rating),[8,null]);
+    assert.equal(editor.score,null); assert.equal(root.querySelector('[data-clear-rating]').hidden,true);
 });
 
-test('a late summary poll cannot replace a newer saved review result', async () => {
-    const {exports, localRuntime, runTimers} = await environment('ui/rating.js');
-    const root = new Element(); const editor = new exports.RatingEditor(root, {id:'42'});
-    const old = deferred();
-    localRuntime.getContentAnalysis = () => old.promise;
-    editor.watchAnalysis({status:'running', current:false, text:''});
-    runTimers(1500);
-    editor.watchAnalysis({status:'ready', current:true, text:'新评语的分析'});
-    old.resolve({status:'ready', current:true, text:'旧评语的分析'});
-    await old.promise;
-    assert.equal(root.querySelector('[data-summary-text]').textContent, '新评语的分析');
+test('preference editor renames, re-levels and removes entries through one save call each', async () => {
+    const {exports,localRuntime} = await environment('ui/preference-editor.js');
+    const root=new Element(); const editor=Object.assign(new exports.PreferenceEditor(root,{kind:'tag',levels:['like','fond','avoid','dislike'],noun:'标签'}),{form:root.querySelector('form')});
+    editor.form.elements={name:{value:'',focus(){}}};
+    editor.entries=new Map([['旅行','like']]);
+    const requests=[];
+    localRuntime.savePreference=async value => { requests.push(JSON.parse(JSON.stringify(value))); return {tags:{}, authors:{}}; };
+    editor.edit('旅行');
+    assert.equal(editor.form.elements.name.value,'旅行'); assert.equal(editor.level,'like');
+    editor.form.elements.name.value='旅途'; editor.level='fond';
+    await editor.submit();
+    assert.deepEqual(requests[0],{kind:'tag',name:'旅途',level:'fond',previous:'旅行'});
+    assert.equal(editor.editing,'');
+    await editor.remove('日常');
+    assert.deepEqual(requests[1],{kind:'tag',name:'日常',level:null});
+    editor.form.elements.name.value='  ';
+    await editor.submit();
+    assert.equal(requests.length,2);
 });
 
 test('seeking clamps page numbers and realigns after earlier images change height', async () => {

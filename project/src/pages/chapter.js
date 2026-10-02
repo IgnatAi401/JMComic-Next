@@ -5,16 +5,19 @@ import { translateTitleToSimplifiedChinese } from "../api/GoogleTranslateApi.js"
 import { hasMissingComicChapterNames } from "../utils/ComicChapterNames.js";
 import { readLocalStorage } from "../utils/BrowserStorage.js";
 import { mountShell, openAccount } from "../ui/shell.js";
-import { asText, authorsOf, comicPayload, escapeHtml, formatCount, formatDate, isApiTrue, readerUrl, searchUrl, textList } from "../ui/dom.js";
+import { asText, authorsOf, escapeHtml, formatCount, formatDate, isApiTrue, readerUrl, searchUrl, textList } from "../ui/dom.js";
 import { coverHtml, hydrateCovers } from "../ui/covers.js";
 import { comicCardHtml } from "../ui/comic-card.js";
+import { hydrateRichCards } from "../ui/rich-cards.js";
 import { chaptersOf } from "../ui/chapters.js";
 import { Comments } from "../ui/comments.js";
 import { RatingEditor } from "../ui/rating.js";
-import { InterestFeedback } from "../ui/interest.js";
+import { PagePreview } from "../ui/page-preview.js";
+import { loadPreferences, preferenceAuthorsHtml, preferenceTagsHtml } from "../ui/preferences.js";
 import { icon } from "../ui/icons.js";
 import { renderPageError } from "../ui/states.js";
 import { showToast } from "../ui/toast.js";
+import { watchLaterButtonHtml } from "../ui/watch-later.js";
 
 const links = (values) => textList(values).map((value) => `<a class="tag" href="${searchUrl(value)}">${escapeHtml(value)}</a>`).join("");
 
@@ -34,8 +37,13 @@ class ChapterPage {
         this.render();
         this.bind();
         this.renderChapters();
+        loadPreferences().then((preferences) => {
+            this.root.querySelector(".detail-authors").innerHTML = preferenceAuthorsHtml(authorsOf(album), preferences.authors, { link: true });
+            this.root.querySelector(".detail-tags").innerHTML = preferenceTagsHtml(album.tags, preferences.tags);
+        });
+        const first = this.chapters[0];
+        new PagePreview(this.root.querySelector(".detail-preview"), album, { id: first.id, label: this.chapters.length > 1 ? "第 1 章" : "全篇" }).mount();
         new RatingEditor(this.root.querySelector(".rating-editor"), album).mount();
-        new InterestFeedback(this.root.querySelector(".interest-feedback"), album).mount();
         new Comments(this.root.querySelector(".detail-comments"), id, { total: album.comment_total }).mount();
         this.hydrateNames();
         this.refreshAccount();
@@ -45,7 +53,6 @@ class ChapterPage {
             this.accountKey = key;
             this.refreshAccount();
         });
-        localRuntime.recordInteraction({ event_type: "detail_view", comic_id: String(id), source: "chapter", comic: comicPayload(album, jmApi.getCoverImageURL(id)) });
     }
 
     render() {
@@ -54,15 +61,15 @@ class ChapterPage {
             <div class="detail-cover">${coverHtml(album, { eager: true })}</div>
             <div class="detail-copy"><p class="eyebrow">JM ${escapeHtml(album.id)} · ${this.chapters.length > 1 ? "系列作品" : "单篇作品"}</p>
                 <h1 class="detail-title">${escapeHtml(album.name)}</h1>
-                <div class="detail-byline"><span>${authorsOf(album).map((author) => `<a href="${searchUrl(author)}">${escapeHtml(author)}</a>`).join(" · ") || "作者未标注"}</span><button class="btn btn-ghost btn-sm" type="button" data-translate aria-pressed="false">${icon("translate")}<span>翻译标题</span></button></div>
-                <div class="tag-list detail-tags">${links(album.tags)}</div>
+                <div class="detail-byline"><span class="detail-authors">${preferenceAuthorsHtml(authorsOf(album), undefined, { link: true })}</span><button class="btn btn-ghost btn-sm" type="button" data-translate aria-pressed="false">${icon("translate")}<span>翻译标题</span></button></div>
+                <div class="tag-list detail-tags">${preferenceTagsHtml(album.tags)}</div>
                 <p class="detail-description">${escapeHtml(asText(album.description, "暂无作品简介"))}</p>
                 <dl class="detail-stats"><div><dt>章节</dt><dd>${this.chapters.length}</dd></div><div><dt>页数</dt><dd>${escapeHtml(album.total_photos ?? "—")}</dd></div><div><dt>观看</dt><dd>${formatCount(album.total_views)}</dd></div><div><dt>喜欢</dt><dd>${formatCount(album.likes)}</dd></div></dl>
-                <div class="detail-actions"><a class="btn btn-primary" data-start-read data-navigation="same-tab">${icon("play")}开始阅读</a><button class="btn btn-outline" data-account-action="favorite" type="button" aria-pressed="false">${icon("bookmark")}<span>收藏</span></button><button class="btn btn-outline" data-account-action="like" type="button" aria-pressed="false">${icon("heart")}<span>喜欢</span></button><button class="btn btn-ghost" data-account-action="track" type="button" aria-pressed="false" ${this.chapters.length <= 1 ? "hidden" : ""}>${icon("track")}<span>追踪连载</span></button></div>
+                <div class="detail-actions"><a class="btn btn-primary" data-start-read data-navigation="same-tab">${icon("play")}开始阅读</a>${watchLaterButtonHtml(album)}<button class="btn btn-outline" data-account-action="favorite" type="button" aria-pressed="false">${icon("bookmark")}<span>收藏</span></button><button class="btn btn-outline" data-account-action="like" type="button" aria-pressed="false">${icon("heart")}<span>喜欢</span></button><button class="btn btn-ghost" data-account-action="track" type="button" aria-pressed="false" ${this.chapters.length <= 1 ? "hidden" : ""}>${icon("track")}<span>追踪连载</span></button></div>
             </div></header>
             <div class="detail-layout"><div class="detail-primary">
+                <section class="section detail-preview" aria-labelledby="preview-title"><div class="section-head"><h2 class="section-title" id="preview-title">内容预览</h2><span class="section-meta" data-preview-meta></span></div><div class="preview-strip" data-navigation-scope="same-tab"><span class="preview-page" data-state="loading"></span><span class="preview-page" data-state="loading"></span><span class="preview-page" data-state="loading"></span></div></section>
                 <section class="section"><div class="section-head"><h2 class="section-title">目录</h2><span class="section-meta">${this.chapters.length} 章</span></div><div class="chapter-list" data-navigation-scope="same-tab"></div></section>
-                <section class="section panel interest-feedback"></section>
                 <section class="section rating-editor"></section>
                 <section class="section detail-comments"></section>
             </div><aside class="detail-secondary">
@@ -71,6 +78,7 @@ class ChapterPage {
             <section class="section related"><div class="section-head"><h2 class="section-title">相关作品</h2></div><div class="comic-grid">${(Array.isArray(album.related_list) ? album.related_list : []).map((item) => comicCardHtml(item)).join("")}</div></section>`;
         this.root.querySelector(".related").hidden = !album.related_list?.length;
         hydrateCovers(this.root);
+        hydrateRichCards(this.root);
     }
 
     bind() {
@@ -100,10 +108,10 @@ class ChapterPage {
         try {
             if (this.translated) this.translated = false;
             else {
-                const config = await localRuntime.getAiConfig().catch(() => null);
+                const config = await localRuntime.getTranslationConfig().catch(() => null);
                 const translationCacheKey = config?.use_ai_translation ? `ai:${String(config.model || "configured")}` : "google";
                 if (!this.translation || this.translationCacheKey !== translationCacheKey) {
-                    this.translation = config?.use_ai_translation ? (await localRuntime.translateTitleWithAi(this.originalTitle)).translation : await translateTitleToSimplifiedChinese(this.originalTitle);
+                    this.translation = config?.use_ai_translation ? (await localRuntime.translateTitle(this.originalTitle)).translation : await translateTitleToSimplifiedChinese(this.originalTitle);
                     this.translationCacheKey = translationCacheKey;
                 }
                 this.translated = Boolean(this.translation);
@@ -137,10 +145,6 @@ class ChapterPage {
             if (version !== this.accountVersion) return;
             ["favorite", "liked", "tracking"].forEach((key, i) => { if (states[i].status === "fulfilled") this[key] = isApiTrue(states[i].value); });
             this.renderAccountStates();
-            if (states[0].status === "fulfilled") {
-                const stored = this.favorite || (await localRuntime.getLocalComic(this.album.id))?.comic;
-                if (stored && version === this.accountVersion) await localRuntime.saveLocalComic({ ...comicPayload(this.album, jmApi.getCoverImageURL(this.album.id)), favorite: this.favorite });
-            }
         } catch { /* Detail remains readable; actions offer a retry. */ }
     }
 
@@ -159,11 +163,6 @@ class ChapterPage {
                 const current = await jmApi.getFavoriteState(this.album.id);
                 const result = await jmApi.updateFavoriteState(this.album.id, !isApiTrue(current));
                 this.favorite = result.saved;
-                this.renderAccountStates();
-                try {
-                    // An unfavorite must not create an otherwise absent local record.
-                    if (result.saved || (await localRuntime.getLocalComic(this.album.id))?.comic) await localRuntime.saveLocalComic({ ...comicPayload(this.album, jmApi.getCoverImageURL(this.album.id)), favorite: result.saved });
-                } catch { showToast("账号收藏已更新，本地资料同步暂时失败", "warning"); }
             } else if (action === "like") {
                 const current = await jmApi.getLikeState(this.album.id);
                 await jmApi.toggleLike(this.album.id);
