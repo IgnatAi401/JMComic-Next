@@ -4,6 +4,7 @@ import { DEFAULT_LISTING_FILTERS, ORDER_LABELS, TIME_LABELS, listingFilterSummar
 import { comicCardHtml } from "./comic-card.js";
 import { hydrateCovers } from "./covers.js";
 import { escapeHtml } from "./dom.js";
+import { hydrateRichCards } from "./rich-cards.js";
 import { Feed } from "./feed.js";
 import { Sheet } from "./overlay.js";
 import { stateHtml } from "./states.js";
@@ -149,12 +150,15 @@ export class ListingResults {
         this.query = query;
         this.filters = { ...DEFAULT_LISTING_FILTERS };
         this.renderedIds = new Set();
+        this.comics = [];
+        this.onAppend = null;
         this.maxPage = Infinity;
         this.feed = new Feed({ footer, loadPage: (page, isCurrent) => this.loadPage(page, isCurrent) });
     }
 
     setFilters(filters) {
         this.filters = { ...filters };
+        this.comics = [];
         clearTimeout(this.debounce);
         this.feed.reset();
         // Keep the sentinel from starting an old page while a new filter is debounced.
@@ -217,12 +221,15 @@ export class ListingResults {
             return true;
         });
         if (!unique.length) return 0;
+        this.comics.push(...unique);
         this.grid.querySelector(".state")?.remove();
         const fragment = document.createElement("template");
         fragment.innerHTML = unique.map((comic) => comicCardHtml(comic)).join("");
         const nodes = [...fragment.content.children];
         this.grid.append(...nodes);
         nodes.forEach((node) => hydrateCovers(node));
+        hydrateRichCards(this.grid);
+        this.onAppend?.(unique);
         return unique.length;
     }
 }

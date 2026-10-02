@@ -40,6 +40,8 @@
     --warning-soft: rgba(255, 148, 71, 0.14);
     --error: #ff6464;
     --error-soft: rgba(255, 100, 100, 0.13);
+    --info: #66b8ff;
+    --info-soft: rgba(102, 184, 255, 0.14);
 
     /* Interaction washes */
     --hover: rgba(255, 255, 255, 0.055);
@@ -728,6 +730,46 @@ ul, ol { padding: 0; list-style: none; }
 }
 a.tag:active { background: var(--active); }
 @media (pointer: coarse) { .tag { min-height: 32px; } }
+.tag.is-compact { min-height: 22px; padding: 0 7px; font-size: 12px; }
+@media (pointer: coarse) { .tag.is-compact { min-height: 26px; } }
+.tag-more { background: transparent; color: var(--text-3); box-shadow: var(--line-inset); }
+
+/* Tag and author stances set on the settings page: like / fond / soft avoid / dislike */
+[data-preference="like"] { --preference: var(--success); --preference-soft: var(--success-soft); }
+[data-preference="fond"] { --preference: var(--info); --preference-soft: var(--info-soft); }
+[data-preference="avoid"] { --preference: var(--warning); --preference-soft: var(--warning-soft); }
+[data-preference="dislike"] { --preference: var(--error); --preference-soft: var(--error-soft); }
+.tag[data-preference], a.tag[data-preference]:hover { background: var(--preference-soft); color: var(--preference); }
+.tag[data-preference="dislike"] { text-decoration: line-through; text-decoration-thickness: 1px; }
+/* Author hits are badges with a symbol, so they read at a glance and without colour. */
+.author-name[data-preference] {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px;
+    border-radius: var(--r-xs);
+    background: var(--preference-soft);
+    box-shadow: inset 0 0 0 1px var(--preference);
+    color: var(--preference);
+    font-weight: 700;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.author-name[data-preference]::before { font-size: 0.85em; }
+a.author-name { text-underline-offset: 2px; transition: color var(--t-fast) var(--ease); }
+@media (hover: hover) {
+    a.author-name:not([data-preference]):hover { color: var(--accent-text); text-decoration: underline; }
+    a.author-name[data-preference]:hover { text-decoration: underline; }
+}
+.author-name[data-preference="like"]::before { content: "♥"; }
+.author-name[data-preference="dislike"]::before { content: "✕"; }
+@media (hover: hover) {
+    a.tag[data-preference]:hover { box-shadow: inset 0 0 0 1px currentColor; }
+}
+.tag-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--text-3); font-size: 12px; }
+.tag-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.tag-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.tag-legend [data-preference], .preference-group-title[data-preference] { color: var(--preference); }
 
 /* Forms */
 .form { display: grid; gap: 16px; }
@@ -910,17 +952,11 @@ a.group-row:active, button.group-row:active { background: var(--active); }
 
 .comic-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
-    gap: 22px 12px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
 }
 @media (min-width: 700px) {
-    .comic-grid { gap: 28px 18px; }
-}
-@media (max-width: 699px) and (orientation: portrait) {
-    .comic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 359px) {
-    .comic-grid { gap: 18px 10px; }
+    .comic-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
 }
 
 .comic-rail {
@@ -1033,6 +1069,92 @@ a.cover:active { transform: scale(0.98); }
     font-size: 12.5px;
     white-space: nowrap;
     text-overflow: ellipsis;
+}
+
+/* Rich cards: cover beside album statistics and tags */
+
+.rich-card {
+    grid-template-columns: 104px minmax(0, 1fr);
+    grid-template-areas: "cover body" "tags tags";
+    align-items: start;
+    gap: 12px;
+    padding: 10px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--line-inset);
+}
+.rich-card > .cover { grid-area: cover; }
+/* Bare icon/text buttons added for watch later and search history. */
+.later-toggle, .later-remove, .search-history-pick, .search-history-remove, .search-history-foot button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+}
+/* Watch-later toggle in the card's top-right corner; the title leaves room for it. */
+.rich-card { position: relative; }
+.rich-card .comic-title { padding-right: 30px; }
+.later-toggle {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--r-sm);
+    color: var(--text-3);
+    transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+.later-toggle svg { width: 18px; height: 18px; }
+.later-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); }
+.later-toggle:disabled { opacity: 0.5; }
+@media (hover: hover) {
+    .later-toggle:hover { background: var(--hover); color: var(--text); }
+}
+[data-watch-later].btn[aria-pressed="true"] { color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-text); }
+.rich-card-body { grid-area: body; display: grid; align-content: start; gap: 8px; min-width: 0; }
+.rich-card .comic-meta { margin-top: -4px; }
+/* Wrap instead of truncating so a matched author badge is always visible. */
+.rich-card .comic-meta:not(.rich-note) { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; white-space: normal; }
+.rich-card [data-detail="authors"] { display: contents; }
+/* Cards whose author has a stance get an outline in that colour. */
+.rich-card[data-author-preference="like"] { box-shadow: inset 0 0 0 1.5px var(--success); }
+.rich-card[data-author-preference="dislike"] { box-shadow: inset 0 0 0 1.5px var(--error); }
+.rich-card .rich-note { color: var(--text-2); }
+.rich-stats {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    justify-content: start;
+    gap: 6px 16px;
+}
+.rich-stats div { min-width: 0; }
+.rich-stats dt { color: var(--text-3); font-size: 11px; }
+.rich-stats dd { margin-top: 1px; color: var(--text-2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Full card width under the cover; fitTagRows folds anything past two rows. */
+.rich-tags { grid-area: tags; gap: 4px; min-height: 22px; max-height: 48px; overflow: hidden; }
+@media (pointer: coarse) { .rich-tags { max-height: 56px; } }
+.rich-tags > [hidden] { display: none; }
+.rich-card:not([data-details="ready"]):not([data-details="error"]) .rich-tags::before {
+    content: "";
+    width: 70%;
+    height: 22px;
+    border-radius: var(--r-xs);
+    background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.035) 50%, transparent 70%) var(--surface-2);
+    background-size: 220% 100%;
+    animation: shimmer 1.6s linear infinite;
+}
+.rich-retry { min-height: 26px; color: var(--text-3); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+@media (hover: hover) {
+    .rich-retry:hover { color: var(--text); }
+}
+
+@media (min-width: 1100px) {
+    .rich-card { grid-template-columns: 120px minmax(0, 1fr); gap: 14px; padding: 12px; }
 }
 
 /* ---------- Feedback states ---------- */
@@ -1287,6 +1409,56 @@ a.cover:active { transform: scale(0.98); }
 }
 .search-form .search-submit:active:not(:disabled) { transform: translateY(-50%) scale(0.97); }
 .search-form .input::-webkit-search-cancel-button { display: none; }
+
+/* Recent searches: a dropdown under search boxes and a block inside the search sheet */
+.search-history-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-2);
+}
+.search-history-list { display: grid; gap: 1px; }
+.search-history-list li { display: flex; align-items: center; min-width: 0; border-radius: var(--r-sm); }
+.search-history-pick {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 0 8px;
+    color: var(--text-2);
+    font-size: 13.5px;
+    text-align: left;
+}
+.search-history-pick svg, .search-history-remove svg { flex-shrink: 0; width: 15px; height: 15px; color: var(--text-3); }
+.search-history-pick span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.search-history-remove { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: var(--r-sm); }
+.search-history-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px 4px;
+    border-top: 1px solid var(--line);
+    margin-top: 4px;
+    color: var(--text-3);
+    font-size: 12px;
+}
+.search-history-foot button { color: var(--text-3); font-size: 12px; }
+.search-history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.search-history-head .sheet-section-title { margin: 0; }
+.search-history-section .search-history-pick { min-height: 44px; font-size: 15px; }
+@media (hover: hover) {
+    .search-history-list li:hover { background: var(--hover); }
+    .search-history-list li:hover .search-history-pick { color: var(--text); }
+    .search-history-remove:hover svg, .search-history-foot button:hover { color: var(--text); }
+}
 
 /* ---------- Toast ---------- */
 

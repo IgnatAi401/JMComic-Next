@@ -7,6 +7,7 @@ import { escapeHtml, pageName, searchUrl } from "./dom.js";
 import { icon } from "./icons.js";
 import { Sheet } from "./overlay.js";
 import { mountReadingControls } from "./reading-controls.js";
+import { attachSearchHistory, mountSearchHistorySection } from "./search-history.js";
 import { showToast } from "./toast.js";
 
 /* Information architecture. `rail` is the short label used on the iPad-portrait rail. */
@@ -14,7 +15,6 @@ const PRIMARY = [
     { page: "index", label: "发现", rail: "发现", icon: "discover" },
     { page: "latest", label: "最新更新", rail: "最新", icon: "latest" },
     { page: "categories", label: "分类浏览", rail: "分类", icon: "categories" },
-    { page: "ai", label: "AI 推荐", rail: "推荐", icon: "ai" },
 ];
 const PERSONAL = [
     { page: "library", label: "书架", rail: "书架", icon: "library" },
@@ -134,6 +134,7 @@ class AppShell {
             event.preventDefault();
             this.submitSearch(event.currentTarget.elements.q.value);
         });
+        attachSearchHistory(nav.querySelector(".nav-search"), (query) => this.submitSearch(query));
         document.addEventListener("click", (event) => {
             const trigger = event.target.closest("[data-open-search], [data-open-more], [data-open-account], [data-open-reading], [data-checkin]");
             if (!trigger) return;
@@ -174,6 +175,7 @@ class AppShell {
         if (!query) return false;
         const url = searchUrl(query);
         this.searchSheet?.close();
+        // The search page records the keyword when it opens.
         if (this.current === "search") window.location.assign(url);
         else openInNewPage(url);
         return true;
@@ -188,6 +190,7 @@ class AppShell {
                     <input class="input" type="search" name="q" enterkeyhint="search" autocomplete="off" placeholder="作品、作者或番号" aria-label="搜索关键词" data-autofocus />
                     <button class="btn btn-primary btn-sm search-submit" type="submit">搜索</button>
                 </form>
+                <div class="sheet-section search-history-section" style="margin-top:22px" hidden></div>
                 <div class="sheet-section" style="margin-top:22px">
                     <h3 class="sheet-section-title">常用标签</h3>
                     <div class="chip-row">${HOT_TAGS.map((tag) => `<button class="chip" type="button" data-search-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join("")}</div>
@@ -204,6 +207,7 @@ class AppShell {
                 const tag = event.target.closest("[data-search-tag]");
                 if (tag) this.submitSearch(tag.dataset.searchTag);
             });
+            mountSearchHistorySection(this.searchSheet.body.querySelector(".search-history-section"), (query) => this.submitSearch(query));
         }
         if (this.current === "search") {
             const query = new URLSearchParams(location.search).get("sq") || "";
@@ -231,7 +235,7 @@ class AppShell {
                 <div class="sheet-section" data-navigation-scope="same-tab">
                     <div class="action-grid">
                         ${tile("latest", "最新更新", "latest")}
-                        ${tile("ai", "AI 推荐", "ai")}
+                        ${tile("library", "书架", "library")}
                         ${tile("messages", "消息与追更", "messages", '<b class="badge" data-unread hidden>0</b>')}
                         <button class="action-tile" type="button" data-checkin>${icon("checkin")}<span data-checkin-label>每日签到</span></button>
                         ${tile("setting", "设置", "settings")}
@@ -258,12 +262,12 @@ class AppShell {
         this.readingSheet.open({ opener });
     }
 
-    /** Open account + AI configuration. `section` may be "embedding" or "llm" to jump there. */
+    /** Open account + translation configuration. `section` may be "translation" to jump there. */
     openAccount(section = "", opener = document.activeElement) {
         if (!this.accountSheet) {
             this.accountSheet = new Sheet({
                 name: "account",
-                title: "账号与 AI 接口",
+                title: "账号与翻译",
                 onClose: () => this.accountPanel.clearSecrets(),
             });
             this.accountPanel = new AccountPanel(this.accountSheet.body).mount();
@@ -286,7 +290,7 @@ class AppShell {
             node.textContent = configured ? name : "未配置账号";
         });
         document.querySelectorAll("[data-account-hint]").forEach((node) => {
-            node.textContent = configured ? "账号与 AI 接口" : "点此配置账号";
+            node.textContent = configured ? "账号与翻译" : "点此配置账号";
         });
         this.nav?.querySelector("[data-open-account]")?.setAttribute("aria-label", configured ? `账号配置，已配置 ${name}` : "账号配置，尚未配置");
     }

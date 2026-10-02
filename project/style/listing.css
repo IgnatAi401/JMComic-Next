@@ -7,6 +7,12 @@
 .listing-results { min-width: 0; }
 .listing-results > .comic-grid > .state { grid-column: 1 / -1; }
 .filter-panel { min-width: 0; }
+.organized-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 20px; }
+.organized-summary { color: var(--text-2); font-size: 13px; }
+.organized-hint { margin: -6px 0 14px; color: var(--text-3); font-size: 13px; }
+.organized-group { margin-top: 32px; }
+.organized-head + .organized-group { margin-top: 0; }
+.organized .rich-note { color: var(--accent-text); }
 .filter-group { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .filter-group:first-child { padding-top: 0; }
 .filter-group:last-child { border-bottom: 0; }

@@ -4,6 +4,9 @@ import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../util
 import { crypto } from "./Crypto.js";
 import { listingApiOrder, listingCategoryPath, normalizeListingFilters } from "../utils/ListingFilters.js";
 
+// Check-in rewards appear as "Jcoin:10 EXP:10" or "[EXP:10] [COIN:2]".
+const DAILY_REWARD_PATTERN = /\[?\s*(J?COINS?|EXP)\s*[:：]\s*(\d+)\s*\]?/gi;
+
 /** Browser client for the JM mobile API. */
 class JmcomicApi {
     accessToken = null;
@@ -411,29 +414,6 @@ class JmcomicApi {
         return (await this.#requestApi(`/favorite?${query}`, { authenticated: true })).result;
     }
 
-    async getAllFavorites() {
-        const first = await this.getFavorites(1, "0", "mr");
-        const firstList = Array.isArray(first?.list) ? first.list : [];
-        const total = Math.max(firstList.length, Number(first?.total) || 0);
-        const pageSize = Math.max(1, Number(first?.count) || firstList.length || 20);
-        const pageCount = Math.max(1, Math.ceil(total / pageSize));
-        const pages = [first];
-        for (let start = 2; start <= pageCount; start += 4) {
-            const batch = Array.from(
-                { length: Math.min(4, pageCount - start + 1) },
-                (_, index) => this.getFavorites(start + index, "0", "mr"),
-            );
-            pages.push(...await Promise.all(batch));
-        }
-        const seen = new Set();
-        return pages.flatMap((page) => Array.isArray(page?.list) ? page.list : []).filter((item) => {
-            const id = String(item?.id || "");
-            if (!id || seen.has(id)) return false;
-            seen.add(id);
-            return true;
-        });
-    }
-
     async getFavoriteIds(force = false) {
         if (this.favoriteIds && !force) return this.favoriteIds;
         if (this.favoriteSnapshotPromise && !force) return this.favoriteSnapshotPromise;
@@ -674,15 +654,28 @@ class JmcomicApi {
         if (failedStatus || failedCode || failedMessage || this.#dailyMessage(result?.error) || this.#dailyMessage(payload?.error)) {
             throw new Error(`签到接口返回失败：${message || `状态 ${status || result?.code || payload?.code}`}`);
         }
-        // Reward hints alone can occur in explanatory/failure responses.
+        const emptyResult = result == null || (typeof result === "object" && Object.keys(result).length === 0);
+        if (emptyResult && !message && !status) {
+            // The server answers code 200 with an empty list when it did not parse the form fields.
+            throw new Error("签到接口返回了空结果，未确认成功：服务器可能没有收到签到参数。请稍后再次签到确认。");
+        }
+        // The real success response carries only rewards, e.g. {"msg":"Jcoin:10 EXP:10"}.
+        // Failure wording is rejected above, so a reward-only message is a confirmed success.
+        const rewards = this.#dailyRewards(message);
         const successMessage = /签到成功|簽到成功|check[ -]?in\s+(?:succeeded|successful)/i.test(message);
-        if ((!successStatus && !successMessage) || (status && !successStatus)) {
+        if ((!successStatus && !successMessage && !rewards.length) || (status && !successStatus)) {
             throw new Error(`签到响应异常，未确认成功${message ? `：${message}` : ""}${status ? `（状态 ${status}）` : ""}。请稍后再次签到确认。`);
         }
-        const localizedMessage = message
-            .replace(/\[\s*EXP\s*:\s*(\d+)\s*\]/gi, "获得 $1 经验")
-            .replace(/\[\s*COIN\s*:\s*(\d+)\s*\]/gi, "获得 $1 金币");
+        if (rewards.length && !message.replace(DAILY_REWARD_PATTERN, "").replace(/[\s,，、；;]+/g, "")) {
+            return { status: "success", message: `签到成功：获得 ${rewards.join("、")}` };
+        }
+        const localizedMessage = message.replace(DAILY_REWARD_PATTERN, (_match, kind, amount) => `获得 ${amount} ${/exp/i.test(kind) ? "经验" : "金币"}`);
         return { status: "success", message: localizedMessage || "签到成功" };
+    }
+
+    #dailyRewards(message) {
+        return [...message.matchAll(DAILY_REWARD_PATTERN)]
+            .map(([, kind, amount]) => `${amount} ${/exp/i.test(kind) ? "经验" : "金币"}`);
     }
 
     #assertDailyCheckInEnvelope(payload) {

@@ -1,33 +1,33 @@
+import email
+import email.policy
 import io
 import json
-import os
 import tempfile
 import threading
-import time
 import unittest
 from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from local_features import LocalFeatureStore
+from local_library import LocalLibrary
+from title_translation import TitleTranslator
 
 
 # Importing the server normally initializes project/data. Keep every test run
 # isolated, including unittest discovery, before that initialization happens.
 _server_temporary = tempfile.TemporaryDirectory()
-_server_store = LocalFeatureStore(Path(_server_temporary.name))
-with patch("local_features.LocalFeatureStore", return_value=_server_store):
+_server_library = LocalLibrary(Path(_server_temporary.name))
+with patch("local_library.LocalLibrary", return_value=_server_library):
     import local_server
-local_server.LocalFeatureStore = LocalFeatureStore
-local_server.DATA_DIR = _server_store.data_dir
+local_server.DATA_DIR = _server_library.data_dir
 local_server.ACCOUNT_FILE = local_server.DATA_DIR / "account.json"
 local_server.CACHE_DIR = local_server.DATA_DIR / "cache" / "api"
+local_server.translator = TitleTranslator(local_server.DATA_DIR / "translation.json")
 
 
 def tearDownModule():
-    local_server.embedding_runtime.stop()
-    local_server.content_analysis.stop()
     _server_temporary.cleanup()
 
 
@@ -47,43 +47,14 @@ class _ProxyResponse:
         return self.payload
 
 
-def _handler_with_body(value):
+def _handler_with_body(value, path="/"):
     payload = json.dumps(value).encode("utf-8")
     handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+    handler.path = path
     handler.headers = {"Content-Length": str(len(payload))}
     handler.rfile = io.BytesIO(payload)
     handler.send_json = Mock()
     return handler
-
-
-class AtomicJsonWriteTests(unittest.TestCase):
-    def test_failed_replace_removes_temporary_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "settings.json"
-
-            with patch("local_server.os.replace", side_effect=OSError("replace failed")):
-                with self.assertRaises(OSError):
-                    local_server.atomic_json_write(target, {"value": 1})
-
-            self.assertFalse(target.exists())
-            self.assertEqual(list(target.parent.glob(f"{target.name}.*.tmp")), [])
-
-    def test_successful_replace_fsyncs_parent_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "settings.json"
-
-            with (
-                patch("local_server.os.open", return_value=321) as open_directory,
-                patch("local_server.os.fsync") as fsync,
-                patch("local_server.os.close") as close_directory,
-            ):
-                local_server.atomic_json_write(target, {"value": 1})
-
-            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"value": 1})
-            open_directory.assert_called_once_with(target.parent, os.O_RDONLY)
-            self.assertEqual(fsync.call_count, 2)
-            fsync.assert_any_call(321)
-            close_directory.assert_called_once_with(321)
 
 
 class RuntimeFileReadTests(unittest.TestCase):
@@ -96,57 +67,18 @@ class RuntimeFileReadTests(unittest.TestCase):
                         target.write_text(json.dumps(value), encoding="utf-8")
                         self.assertEqual(local_server.read_account(), {"username": "", "password": ""})
 
-class LocalHandlerConfigGetTests(unittest.TestCase):
-    def test_config_get_errors_are_returned_as_structured_json(self):
-        routes = (
-            ("/local-api/ai/config", local_server.local_features, "read_ai_config"),
-            ("/local-api/ai/embeddings/config", local_server.local_features, "read_embedding_config"),
-            ("/local-api/ai/embeddings/status", local_server.embedding_runtime, "status"),
-        )
-        error_types = (local_server.LocalFeatureError, local_server.QwenEmbeddingError)
 
-        for path, target, method in routes:
-            for error_type in error_types:
-                with self.subTest(path=path, error_type=error_type.__name__):
-                    handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
-                    handler.path = path
-                    handler.send_json = Mock()
-                    with patch.object(target, method, side_effect=error_type("配置读取失败")):
-                        handler.do_GET()
-                    handler.send_json.assert_called_once_with(
-                        {"error": "配置读取失败"},
-                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                    )
+class TranslationConfigRouteTests(unittest.TestCase):
+    def test_config_read_errors_are_returned_as_structured_json(self):
+        handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+        handler.path = "/local-api/translation/config"
+        handler.send_json = Mock()
+        with patch.object(local_server.translator, "read_config", side_effect=local_server.TranslationError("配置读取失败")):
+            handler.do_GET()
+        handler.send_json.assert_called_once_with({"error": "配置读取失败"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 class LocalHandlerBodyTests(unittest.TestCase):
-    def test_rating_save_is_committed_before_summary_and_survives_summary_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalFeatureStore(Path(directory))
-            def fail_after_commit(comic_id):
-                self.assertEqual(store.get_comic(comic_id)["rating"], 8)
-                self.assertEqual(store.get_comic(comic_id)["review"], "我的评语")
-                raise RuntimeError("unavailable")
-            runtime = Mock()
-            runtime.enqueue.side_effect = fail_after_commit
-            handler = _handler_with_body({"id": "99", "rating": 8, "review": "我的评语"})
-            handler.path = "/local-api/library/comic"
-            with patch.object(local_server, "local_features", store), patch.object(local_server, "content_analysis", runtime), \
-                 patch.object(local_server.embedding_runtime, "enqueue_background"):
-                handler.do_POST()
-            result = handler.send_json.call_args.args[0]
-            self.assertEqual(result["comic"]["rating"], 8)
-            self.assertEqual(result["content_analysis"]["status"], "error")
-
-    def test_recommendation_route_does_not_require_embeddings(self):
-        handler = _handler_with_body({"candidates": [{"id": "1", "title": "候选"}]})
-        handler.path = "/local-api/ai/recommendations/generate"
-        expected = {"recommendations": [{"id": "1"}]}
-        with patch.object(local_server.local_features, "generate_recommendations", return_value=expected), \
-             patch.object(local_server.embedding_runtime, "prepare_candidates", side_effect=AssertionError("not needed")):
-            handler.do_POST()
-        handler.send_json.assert_called_once_with(expected)
-
     def test_json_body_must_be_an_object(self):
         for value in (None, [], [1], "text", 3, True):
             with self.subTest(value=value):
@@ -161,6 +93,75 @@ class LocalHandlerBodyTests(unittest.TestCase):
         handler = _handler_with_body({"value": 1})
         self.assertEqual(handler.read_json_body(), {"value": 1})
         handler.send_json.assert_not_called()
+
+
+class LibraryRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        library_patch = patch.object(local_server, "library", LocalLibrary(Path(self.temporary.name)))
+        library_patch.start()
+        self.addCleanup(library_patch.stop)
+
+    def request(self, method, path, body=None):
+        handler = _handler_with_body(body or {}, path)
+        getattr(handler, f"do_{method}")()
+        return handler.send_json.call_args
+
+    def test_history_api_import_read_clear_and_invalid_kind(self):
+        call = self.request("POST", "/local-api/library/history?kind=reading", {"items": [{"id": "123", "savedAt": 10}], "legacy": True})
+        self.assertEqual(call.args[0]["items"][0]["id"], "123")
+        self.assertEqual(len(self.request("GET", "/local-api/library/history?kind=reading").args[0]["items"]), 1)
+        self.assertEqual(self.request("DELETE", "/local-api/library/history?kind=reading").args[0]["items"], [])
+        self.assertEqual(self.request("GET", "/local-api/library/history?kind=invalid").kwargs["status"], HTTPStatus.BAD_REQUEST)
+
+    def test_watch_later_api_removes_one_entry(self):
+        self.request("POST", "/local-api/library/history?kind=later", {"items": [{"id": "1", "savedAt": 1}, {"id": "2", "savedAt": 2}]})
+        items = self.request("DELETE", "/local-api/library/history?kind=later&id=2").args[0]["items"]
+        self.assertEqual([item["id"] for item in items], ["1"])
+
+    def test_search_history_api_records_removes_and_clears(self):
+        self.request("POST", "/local-api/search-history", {"query": "旅行"})
+        self.request("POST", "/local-api/search-history", {"query": "日常"})
+        self.assertEqual([item["query"] for item in self.request("GET", "/local-api/search-history").args[0]["items"]], ["日常", "旅行"])
+        self.assertEqual(self.request("POST", "/local-api/search-history", {"query": ""}).kwargs["status"], HTTPStatus.BAD_REQUEST)
+        self.assertEqual(len(self.request("DELETE", "/local-api/search-history?q=%E6%97%A5%E5%B8%B8").args[0]["items"]), 1)
+        self.assertEqual(self.request("DELETE", "/local-api/search-history").args[0]["items"], [])
+
+    def test_rating_api_saves_reads_lists_and_clears(self):
+        comic = {"id": "99", "title": "示例", "authors": ["作者"], "cover_url": "/c.jpg", "rating": 8}
+        self.assertEqual(self.request("POST", "/local-api/ratings", comic).args[0]["rating"]["rating"], 8)
+        self.assertEqual(self.request("GET", "/local-api/ratings?id=99").args[0]["rating"]["title"], "示例")
+        self.assertEqual([item["id"] for item in self.request("GET", "/local-api/ratings").args[0]["ratings"]], ["99"])
+        self.assertEqual(self.request("POST", "/local-api/ratings", {"id": "99", "rating": None}).args[0], {"rating": None})
+        self.assertEqual(self.request("GET", "/local-api/ratings?id=99").args[0], {"rating": None})
+        self.assertEqual(self.request("POST", "/local-api/ratings", {"id": "99", "rating": 11}).kwargs["status"], HTTPStatus.BAD_REQUEST)
+        self.assertEqual(self.request("GET", "/local-api/ratings?id=x").kwargs["status"], HTTPStatus.BAD_REQUEST)
+
+    def test_preference_api_returns_every_stance_after_each_change(self):
+        self.request("POST", "/local-api/preferences", {"kind": "tag", "name": "旅行", "level": "fond"})
+        call = self.request("POST", "/local-api/preferences", {"kind": "author", "name": "作者", "level": "like"})
+        self.assertEqual(call.args[0], {"tags": {"旅行": "fond"}, "authors": {"作者": "like"}})
+        self.assertEqual(self.request("GET", "/local-api/preferences").args[0], call.args[0])
+        call = self.request("POST", "/local-api/preferences", {"kind": "author", "name": "作者", "level": "fond"})
+        self.assertEqual(call.kwargs["status"], HTTPStatus.BAD_REQUEST)
+
+
+class StaticPrivacyTests(unittest.TestCase):
+    def test_private_data_and_caches_are_never_served_as_static_files(self):
+        handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+        handler.directory = str(local_server.PROJECT_DIR)
+        handler.send_error = Mock()
+        for path in ["/data/account.json", "/DATA/user_library.sqlite3", "/data/%61ccount.json",
+                     "/./data/translation.json", "/.runtime-cache/api/album/1.json"]:
+            with self.subTest(path=path):
+                handler.path = path
+                self.assertIsNone(handler.send_head())
+                handler.send_error.assert_called_with(HTTPStatus.NOT_FOUND)
+        handler.path = "/index.html"
+        with patch.object(SimpleHTTPRequestHandler, "send_head", return_value="page") as static:
+            self.assertEqual(handler.send_head(), "page")
+        static.assert_called_once_with()
 
 
 class LocalHandlerResponseTests(unittest.TestCase):
@@ -229,6 +230,14 @@ class CheckInProxyTests(unittest.TestCase):
         self.assertEqual(local_server.PROXY_PATH_METHODS["/daily"], {"GET"})
         self.assertEqual(local_server.PROXY_PATH_METHODS["/daily_chk"], {"POST"})
 
+
+class OrganizeCacheTests(unittest.TestCase):
+    def test_organize_results_use_the_seven_day_local_cache(self):
+        handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+        self.assertIn("organize", local_server.CACHE_KINDS)
+        self.assertEqual(handler.parse_cache_target("/local-api/cache/organize/s0123abcd4567ef89"), ("organize", "s0123abcd4567ef89"))
+        self.assertEqual(local_server.MAX_CACHE_AGE, 7 * 24 * 60 * 60)
+
         handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
         self.assertIsNone(handler.parse_cache_target("/local-api/cache/checkin/42"))
 
@@ -276,13 +285,42 @@ class CheckInProxyTests(unittest.TestCase):
         for call in urlopen.call_args_list:
             request = call.args[0]
             self.assertEqual(request.get_method(), "POST")
-            self.assertEqual(request.data, b"user_id=42&daily_id=68")
+            content_type = request.get_header("Content-type")
+            self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+            boundary = content_type.split("boundary=", 1)[1]
+            message = email.message_from_bytes(
+                f"Content-Type: {content_type}\r\n\r\n".encode() + request.data,
+                policy=email.policy.HTTP,
+            )
+            fields = {part.get_param("name", header="content-disposition"): part.get_content() for part in message.iter_parts()}
+            self.assertEqual(fields, {"user_id": "42", "daily_id": "68"})
+            self.assertTrue(request.data.endswith(f"--{boundary}--\r\n".encode()))
         self.assertEqual(handler.send_raw_json.call_count, 2)
         handler.send_json.assert_not_called()
 
+    def test_other_account_posts_stay_url_encoded(self):
+        handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+        handler.send_json = Mock()
+        handler.send_raw_json = Mock()
+        state = {"server": "api.example.com", "session": "session", "user": {"uid": "42"}}
+        with (
+            patch.object(local_server.jm_session, "active", return_value=state),
+            patch("local_server.urlopen", return_value=_ProxyResponse()) as urlopen,
+        ):
+            handler.proxy_jm_request({
+                "path": "/like",
+                "method": "POST",
+                "data": {"id": "123"},
+                "token": "token",
+                "tokenParam": "1,3.2.0",
+            })
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Content-type"), "application/x-www-form-urlencoded;charset=UTF-8")
+        self.assertEqual(request.data, b"id=123")
+
 
 class ServerLifecycleTests(unittest.TestCase):
-    def test_main_stops_embeddings_and_closes_server_during_shutdown(self):
+    def test_main_closes_server_during_shutdown(self):
         server = Mock()
         server.serve_forever.side_effect = KeyboardInterrupt
 
@@ -295,11 +333,9 @@ class ServerLifecycleTests(unittest.TestCase):
             patch("local_server.ensure_runtime_files"),
             patch("local_server.cleanup_cache"),
             patch("local_server.ThreadingHTTPServer", return_value=server),
-            patch.object(local_server.embedding_runtime, "stop") as stop_embeddings,
         ):
             local_server.main()
 
-        stop_embeddings.assert_called_once_with()
         server.server_close.assert_called_once_with()
 
 
@@ -327,74 +363,3 @@ class CacheWriteCounterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class LibraryHistoryRouteTests(unittest.TestCase):
-    def test_history_api_import_read_clear_and_invalid_kind(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = LocalFeatureStore(Path(directory))
-            with patch.object(local_server, "local_features", store):
-                handler = _handler_with_body({"items": [{"id": "123", "savedAt": 10}], "legacy": True})
-                handler.path = "/local-api/library/history?kind=reading"
-                handler.do_POST()
-                self.assertEqual(handler.send_json.call_args.args[0]["items"][0]["id"], "123")
-                handler.do_GET()
-                self.assertEqual(len(handler.send_json.call_args.args[0]["items"]), 1)
-                handler.do_DELETE()
-                self.assertEqual(handler.send_json.call_args.args[0]["items"], [])
-                handler.path = "/local-api/library/history?kind=invalid"
-                handler.do_GET()
-                self.assertEqual(handler.send_json.call_args.kwargs["status"], HTTPStatus.BAD_REQUEST)
-
-
-class RecommendationJobRouteTests(unittest.TestCase):
-    def test_committed_job_ack_and_storage_failure_are_distinct(self):
-        handler = _handler_with_body({'id': 'task-1234567890123456', 'payload': {}})
-        handler.path = '/local-api/ai/recommendation-jobs'
-        with patch.object(local_server, 'recommendation_jobs') as jobs:
-            jobs.submit.return_value = {'id': 'task-1234567890123456', 'accepted': True}
-            handler.do_POST()
-            self.assertTrue(handler.send_json.call_args.args[0]['accepted'])
-            jobs.submit.side_effect = OSError('disk full')
-            handler.rfile.seek(0)
-            handler.do_POST()
-            self.assertEqual(handler.send_json.call_args.kwargs['status'], HTTPStatus.SERVICE_UNAVAILABLE)
-            self.assertNotIn('accepted', handler.send_json.call_args.args[0])
-
-    def test_missing_job_is_not_reported_as_running(self):
-        handler = _handler_with_body({})
-        handler.path = '/local-api/ai/recommendation-jobs?id=missing'
-        with patch.object(local_server, 'recommendation_jobs') as jobs:
-            jobs.get.return_value = None
-            handler.do_GET()
-            self.assertEqual(handler.send_json.call_args.kwargs['status'], HTTPStatus.NOT_FOUND)
-
-    def test_task_database_cannot_be_downloaded_as_static_file(self):
-        handler = _handler_with_body({})
-        handler.directory = str(local_server.PROJECT_DIR)
-        handler.send_error = Mock()
-        for path in ['/data/recommendation_jobs.sqlite3', '/data/recommendation_jobs.sqlite3-journal',
-                     '/data/%72ecommendation_jobs.sqlite3']:
-            handler.path = path
-            self.assertIsNone(handler.send_head())
-            handler.send_error.assert_called_with(HTTPStatus.NOT_FOUND)
-
-
-class AnalysisSourceTests(unittest.TestCase):
-    def test_fetches_album_and_two_pages(self):
-        responses = [{"id": 123, "description": "虚构简介"},
-                     {"list": [{"content": "第一条评论"}], "total": "3"},
-                     {"list": [{"content": "第二条评论"}], "total": "3"}]
-        with tempfile.TemporaryDirectory() as directory, patch.object(local_server, "CACHE_DIR", Path(directory)):
-            target = Path(directory) / "bootstrap" / "servers.json"
-            target.parent.mkdir()
-            target.write_text('{"data":["example.invalid"]}')
-            with patch.object(local_server, "normalize_proxy_servers", return_value=["example.invalid"]), patch.object(
-                local_server, "urlopen", side_effect=[_ProxyResponse(json.dumps({"data": v}).encode()) for v in responses]
-            ) as remote:
-                value = local_server.fetch_analysis_source("123")
-            self.assertEqual(remote.call_count, 3)
-            self.assertIn("/forum?", remote.call_args.args[0].full_url)
-            self.assertEqual(value["description"], "虚构简介")
-            self.assertEqual(len(value["comments"]), 2)
-            self.assertEqual(value["comments_status"], "ready")

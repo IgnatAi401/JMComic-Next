@@ -41,6 +41,7 @@
 .reader-end { padding: 12px 0 48px; text-align: center; }
 .reader-end-title { font-size: 20px; margin: 10px 0 24px; }
 .reader-end .page-actions { justify-content: center; }
+.reader-end .reader-later { margin-top: 12px; }
 .reader-chapter-list { display: grid; gap: 8px; }
 .reader-progress-form { display: grid; gap: 18px; }
 .reader-progress-form input[type="range"] { width: 100%; min-height: 44px; accent-color: var(--accent); }

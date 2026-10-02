@@ -433,7 +433,7 @@ test('check-in distinguishes confirmed success, already checked in, and ambiguou
         const { api, requests } = checkInHarness([dailyActivity(), { code: 200, data: { status, msg: '[EXP:10] [COIN:2]' } }]);
         const result = await api.dailyCheckIn('42');
         assert.equal(result.status, 'success');
-        assert.match(result.message, /获得 10 经验.*获得 2 金币/);
+        assert.equal(result.message, '签到成功：获得 10 经验、2 金币');
         assert.equal(requests[0].path, '/daily?user_id=42');
         assert.deepEqual(requests[1].data, { user_id: '42', daily_id: '68' });
     }
@@ -441,9 +441,27 @@ test('check-in distinguishes confirmed success, already checked in, and ambiguou
         const { api } = checkInHarness([dailyActivity(), { code: 200, data: { status: 0, msg } }]);
         assert.equal((await api.dailyCheckIn('42')).status, 'already');
     }
-    for (const data of [{}, { msg: '[EXP:10]' }, { status: 'unknown', msg: '签到成功' }]) {
+    for (const data of [{ msg: '本次签到' }, { status: 'unknown', msg: '签到成功' }, { status: 'unknown', msg: 'Jcoin:10 EXP:10' }]) {
         const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
-        await assert.rejects(api.dailyCheckIn('42'), /未确认成功/);
+        await assert.rejects(api.dailyCheckIn('42'), /响应异常，未确认成功/);
+    }
+});
+
+test('check-in accepts the real reward-only success response', async () => {
+    for (const data of [{ msg: 'Jcoin:10 EXP:10' }, JSON.stringify({ msg: 'Jcoin:10 EXP:10' }), { msg: '[EXP:10]' }]) {
+        const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
+        const result = await api.dailyCheckIn('42');
+        assert.equal(result.status, 'success');
+        assert.match(result.message, /^签到成功：获得 /);
+    }
+    const { api } = checkInHarness([dailyActivity(), { code: 200, data: { msg: 'Jcoin:10 EXP:10' } }]);
+    assert.equal((await api.dailyCheckIn('42')).message, '签到成功：获得 10 金币、10 经验');
+});
+
+test('check-in reports an empty response as unparsed parameters, not success', async () => {
+    for (const data of [[], {}, JSON.stringify([])]) {
+        const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
+        await assert.rejects(api.dailyCheckIn('42'), /空结果.*没有收到签到参数/);
     }
 });
 
@@ -520,3 +538,89 @@ test('check-in UI shows distinct tones and restores controls after every outcome
         assert.equal(shell.checkingIn, false);
     }
 });
+
+function thumbnailRecorder() {
+    const calls = [];
+    const ImageCutter = loadModule("reader/ImageCutter.js", "ImageCutter", {
+        crypto: { calculateMD5: () => { throw new Error("Unexpected hashing"); } },
+        document: { createElement: () => Object.assign(new Element("canvas"), { getContext: () => ({ drawImage: (...args) => calls.push(args) }) }) },
+    });
+    return { cutter: new ImageCutter(), calls };
+}
+
+test("thumbnail restoration keeps strip order and scales without gaps", () => {
+    const { cutter, calls } = thumbnailRecorder();
+    const image = { naturalWidth: 60, naturalHeight: 103 };
+    const canvas = cutter.restoreThumbnail(image, 220980, "00001.jpg", { maxWidth: 30, maxRatio: 2 });
+    assert.equal(canvas.width, 30);
+    assert.equal(canvas.height, 52);
+    assert.equal(calls.length, 10);
+    assert.deepEqual(calls[0], [image, 0, 90, 60, 13, 0, 0, 30, 7]);
+    calls.forEach((args, index) => {
+        assert.equal(args[2], index === 0 ? 90 : 90 - index * 10);
+        assert.equal(args[7], 30);
+        if (index) assert.equal(args[6], calls[index - 1][6] + calls[index - 1][8]);
+    });
+    assert.equal(calls.at(-1)[6] + calls.at(-1)[8], 52);
+});
+
+test("thumbnail restoration crops long strips from the top", () => {
+    const { cutter, calls } = thumbnailRecorder();
+    const canvas = cutter.restoreThumbnail({ naturalWidth: 60, naturalHeight: 300 }, 220980, "00001.jpg", { maxWidth: 30, maxRatio: 1.6 });
+    assert.equal(canvas.height, 48);
+    assert.deepEqual(calls.map((args) => [args[2], args[6]]), [[270, 0], [240, 15], [210, 30], [180, 45]]);
+});
+
+test("unscrambled thumbnails draw the page once", () => {
+    const { cutter, calls } = thumbnailRecorder();
+    const image = { naturalWidth: 800, naturalHeight: 1000 };
+    const canvas = cutter.restoreThumbnail(image, 100, "01.webp", { maxWidth: 400, scrambled: false });
+    assert.equal(canvas.width, 400);
+    assert.equal(canvas.height, 500);
+    assert.deepEqual(calls, [[image, 0, 0, 800, 1000, 0, 0, 400, 500]]);
+});
+
+test("preview pages sit at a quarter, half and three quarters without duplicates", () => {
+    const previewIndexes = loadModule("ui/page-preview.js", "previewIndexes");
+    assert.deepEqual([...previewIndexes(34)], [8, 17, 25]);
+    assert.deepEqual([...previewIndexes(4)], [1, 2, 3]);
+    assert.deepEqual([...previewIndexes(2)], [0, 1]);
+    assert.deepEqual([...previewIndexes(1)], [0]);
+    assert.deepEqual([...previewIndexes(0)], []);
+});
+
+test("card tags show stance tags first and fold the rest into a counter", () => {
+    const globals = {
+        escapeHtml: (value) => String(value).replace(/[&<>'"]/g, ""),
+        searchUrl: (value) => `./search.html?sq=${encodeURIComponent(value)}`,
+        textList: (value) => (Array.isArray(value) ? value : []).map(String).filter(Boolean),
+        localRuntime: {},
+    };
+    const preferenceTagsHtml = loadModule("ui/preferences.js", "preferenceTagsHtml", globals);
+    const preferences = new Map([["d", "avoid"], ["b", "dislike"], ["e", "fond"], ["c", "like"]]);
+    const compact = preferenceTagsHtml(["a", "b", "c", "d", "e", "a"], preferences, { limit: 4, compact: true });
+    assert.deepEqual([...compact.matchAll(/>([a-e])</g)].map((match) => match[1]), ["c", "e", "b", "d"]);
+    assert.match(compact, /data-preference="dislike"[^>]*>b</);
+    assert.match(compact, /tag-more[^>]*>\+1</);
+    const full = preferenceTagsHtml(["a", "b", "c"], preferences);
+    assert.deepEqual([...full.matchAll(/>([a-e])</g)].map((match) => match[1]), ["a", "b", "c"]);
+    assert.doesNotMatch(full, /tag-more/);
+    assert.match(full, /aria-label="c（喜欢）"/);
+});
+
+test("authors are coloured by stance and fall back when missing", () => {
+    const globals = {
+        escapeHtml: (value) => String(value).replace(/[&<>'"]/g, ""),
+        searchUrl: (value) => `./search.html?sq=${encodeURIComponent(value)}`,
+        textList: (value) => (Array.isArray(value) ? value : []).map(String).filter(Boolean),
+        localRuntime: {},
+    };
+    const preferenceAuthorsHtml = loadModule("ui/preferences.js", "preferenceAuthorsHtml", globals);
+    const authors = new Map([["甲", "like"], ["乙", "dislike"]]);
+    const html = preferenceAuthorsHtml(["甲", "乙", "丙"], authors);
+    assert.match(html, /<span class="author-name" data-preference="like"[^>]*>甲<\/span> · <span class="author-name" data-preference="dislike"/);
+    assert.match(html, /<span class="author-name">丙<\/span>/);
+    assert.match(preferenceAuthorsHtml(["甲"], authors, { link: true }), /^<a class="author-name" data-preference="like"[^>]*href="\.\/search\.html\?sq=/);
+    assert.equal(preferenceAuthorsHtml([], authors, { fallback: "未知作者" }), "未知作者");
+});
+

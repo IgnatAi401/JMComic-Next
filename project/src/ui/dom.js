@@ -56,7 +56,7 @@ export const plainText = (value) => {
 
 export const detailUrl = (id) => `./chapter.html?id=${encodeURIComponent(id)}`;
 export const searchUrl = (query) => `./search.html?sq=${encodeURIComponent(query)}`;
-export const readerUrl = (chapterId, albumId) => `./reader.html?id=${encodeURIComponent(chapterId)}&album=${encodeURIComponent(albumId)}`;
+export const readerUrl = (chapterId, albumId, page = 0) => `./reader.html?id=${encodeURIComponent(chapterId)}&album=${encodeURIComponent(albumId)}${Number(page) > 1 ? `&page=${Math.trunc(Number(page))}` : ""}`;
 
 export const pageName = () => location.pathname.split("/").pop()?.replace(".html", "") || "index";
 
@@ -71,10 +71,10 @@ export const setBusy = (button, busy, label = null) => {
     if (label !== null) button.textContent = label;
 };
 
+/** The fields the local library stores alongside a rating. */
 export const comicPayload = (album, coverUrl) => ({
     id: String(album.id),
     title: asText(album.name ?? album.title, "未命名作品"),
     authors: authorsOf(album),
-    tags: textList(album.tags),
     cover_url: coverUrl,
 });

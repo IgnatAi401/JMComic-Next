@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only server for JMComic WebUI, account configuration and bounded caches."""
+"""Local-only server for JMComic WebUI: account session, library API and bounded caches."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
-import sqlite3
 import subprocess
 import threading
 import time
@@ -24,10 +24,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
-from local_features import LocalFeatureError, LocalFeatureStore
-from qwen_embeddings import QwenEmbeddingError, QwenEmbeddingRuntime
-from content_analysis import ContentAnalysis
-from recommendation_jobs import RecommendationJobs
+from local_library import LibraryError, LocalLibrary, atomic_json_write
+from title_translation import TitleTranslator, TranslationError
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -35,12 +33,10 @@ PROJECT_DIR = ROOT_DIR / "project"
 DATA_DIR = PROJECT_DIR / "data"
 CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
 ACCOUNT_FILE = DATA_DIR / "account.json"
-local_features = LocalFeatureStore(DATA_DIR)
-embedding_runtime = QwenEmbeddingRuntime(local_features)
-content_analysis = ContentAnalysis(local_features, source_loader=lambda comic_id: fetch_analysis_source(comic_id))
-recommendation_jobs = RecommendationJobs(local_features)
+library = LocalLibrary(DATA_DIR)
+translator = TitleTranslator(DATA_DIR / "translation.json")
 
-CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications"}
+CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications", "organize"}
 CACHE_KEY = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 DEFAULT_MAX_AGE = 7 * 24 * 60 * 60
 MAX_CACHE_AGE = 7 * 24 * 60 * 60
@@ -53,6 +49,7 @@ JM_WEB_REDIRECT_URL = "https://jm365.work/3YeBdF"
 JM_WEB_ORIGIN_TTL = 60 * 60
 PROXY_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?$", re.IGNORECASE)
 PROXY_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
+PRIVATE_STATIC_ROOTS = {"data", ".runtime-cache"}
 JM_TOKEN_SECRET = "185Hcomic3PAPP7R"
 JM_DATA_SECRETS = ("185Hcomic3PAPP7R", "18comicAPPContent")
 JM_APP_VERSION = "3.2.0"
@@ -67,6 +64,8 @@ PROXY_PATH_METHODS = {
     "/album_sertracking": {"GET", "POST"},
     "/album_tracking": {"POST"},
 }
+# These endpoints ignore url-encoded bodies and silently answer code 200 with an empty list.
+PROXY_MULTIPART_PATHS = {"/daily_chk"}
 CACHE_CLEANUP_LOCK = threading.Lock()
 PROXY_DNS_CACHE_TTL = 5 * 60
 PROXY_DNS_CACHE = {}
@@ -74,56 +73,6 @@ PROXY_DNS_CACHE_LOCK = threading.Lock()
 jm_web_origin = ""
 jm_web_origin_expires = 0.0
 jm_web_origin_lock = threading.Lock()
-
-
-def comic_has_explicit_embedding_evidence(comic: object) -> bool:
-    """Avoid loading Qwen for a metadata-only save or a cleared evaluation."""
-
-    if not isinstance(comic, dict):
-        return False
-    if comic.get("rating") is not None or str(comic.get("review") or "").strip():
-        return True
-    if comic.get("interest_feedback"):
-        return True
-    if isinstance(comic.get("tag_feedback"), dict) and comic["tag_feedback"]:
-        return True
-    return False
-
-
-def atomic_json_write(path: Path, value: object, private: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    replaced = False
-    try:
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        replaced = True
-        if private:
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
-        descriptor = None
-        try:
-            descriptor = os.open(path.parent, os.O_RDONLY)
-            os.fsync(descriptor)
-        except OSError:
-            pass
-        finally:
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-    finally:
-        if not replaced:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def ensure_runtime_files() -> None:
@@ -215,50 +164,16 @@ def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
     raise JmSessionError("登录接口数据解密失败")
 
 
-def fetch_analysis_source(comic_id):
-    """Fetch public metadata and at most two comment pages before spending LLM budget."""
-    if not re.fullmatch(r"\d+", str(comic_id)):
-        raise ValueError("作品编号无效")
-    wrapper = json.loads((CACHE_DIR / "bootstrap" / "servers.json").read_text(encoding="utf-8"))
-    servers = normalize_proxy_servers(wrapper.get("data"))
-
-    def request(path):
-        for server in servers:
-            try:
-                timestamp = int(time.time())
-                headers = {"token": hashlib.md5(f"{timestamp}{JM_TOKEN_SECRET}".encode()).hexdigest(),
-                           "tokenParam": f"{timestamp},{JM_APP_VERSION}", "User-Agent": "JMComic-WebUI-Local/1.0"}
-                with urlopen(Request(f"https://{server}{path}", headers=headers), timeout=20) as response:
-                    raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
-                if len(raw) > MAX_PROXY_RESPONSE_BYTES:
-                    raise ValueError("响应过大")
-                envelope = json.loads(raw)
-                if envelope.get("code", 200) not in (200, "200"):
-                    raise ValueError("资料接口失败")
-                data = envelope.get("data", envelope)
-                data = decrypt_jm_data(data, timestamp) if isinstance(data, str) else data
-                if not isinstance(data, dict):
-                    raise ValueError("资料格式无效")
-                return data
-            except (OSError, ValueError, JmSessionError):
-                continue
-        raise ValueError("作品资料获取失败，请重试")
-
-    album = request(f"/album?id={comic_id}")
-    if str(album.get("id")) != str(comic_id):
-        raise ValueError("作品资料不匹配")
-    comments, total = [], None
-    for page in range(1, 3):
-        data = request(f"/forum?{urlencode({'page': page, 'mode': 'all', 'aid': comic_id})}")
-        if not isinstance(data.get("list"), list):
-            raise ValueError("评论格式无效")
-        total = max(0, int(data["total"])) if data.get("total") is not None else None
-        comments.extend(data["list"][:60 - len(comments)])
-        if not data["list"] or len(comments) >= 60 or (total is not None and len(comments) >= total):
-            break
-    return {"description": album.get("description") or album.get("intro") or "",
-            "description_fetched": True, "comments": comments,
-            "comments_total": total, "comments_status": "ready"}
+def encode_multipart_form(fields: dict) -> tuple[bytes, str]:
+    boundary = f"----JMComicWebUI{secrets.token_hex(12)}"
+    parts = []
+    for key, value in fields.items():
+        name = str(key).replace("\\", "\\\\").replace('"', '\\"').replace("\r", "").replace("\n", "")
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+        )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
 def request_jm_login(username: str, password: str, servers: list[str]) -> tuple[str, str, dict]:
@@ -558,9 +473,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(PROJECT_DIR), **kwargs)
 
     def send_head(self):
-        # Task sources/results must never be served as static files (GET or HEAD).
+        # Account, library and cache files sit under the served root but are never static content.
+        # The comparison is case-insensitive because macOS volumes usually are.
         target = Path(self.translate_path(self.path)).resolve()
-        if target.name.startswith("recommendation_jobs.sqlite3"):
+        root = Path(self.directory).resolve()
+        parts = target.relative_to(root).parts if target.is_relative_to(root) else ()
+        if parts and parts[0].casefold() in PRIVATE_STATIC_ROOTS:
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
         return super().send_head()
@@ -575,21 +493,26 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/local-api/ai/recommendation-jobs":
-            key = parse_qs(parsed.query).get("id", [None])[0]
-            try:
-                job = recommendation_jobs.get(key)
-                self.send_json(job if job is not None else {"error": "任务不存在"},
-                               status=HTTPStatus.OK if job is not None else HTTPStatus.NOT_FOUND)
-            except (OSError, sqlite3.Error):
-                self.send_json({"error": "任务存储暂不可用，请保留浏览器缓存并重试"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
-            return
+        query = parse_qs(parsed.query)
         if parsed.path == "/local-api/library/history":
-            kind = parse_qs(parsed.query).get("kind", [""])[0]
             try:
-                self.send_json(local_features.library_history(kind))
-            except (LocalFeatureError, ValueError) as error:
+                self.send_json(library.library_history(query.get("kind", [""])[0]))
+            except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/ratings":
+            try:
+                comic_id = query.get("id", [None])[0]
+                self.send_json({"ratings": library.list_ratings()} if comic_id is None
+                               else {"rating": library.get_rating(comic_id)})
+            except LibraryError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/preferences":
+            self.send_json(library.preferences())
+            return
+        if parsed.path == "/local-api/search-history":
+            self.send_json(library.search_history())
             return
         if parsed.path == "/local-api/account":
             account = read_account()
@@ -602,83 +525,19 @@ class LocalHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/local-api/chapter-names":
             try:
-                album_id = parse_qs(parsed.query).get("id", [""])[0]
-                self.send_json(get_web_chapter_names(album_id))
+                self.send_json(get_web_chapter_names(query.get("id", [""])[0]))
             except ChapterNameError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
             return
-        if parsed.path == "/local-api/ai/config":
+        if parsed.path == "/local-api/translation/config":
             try:
-                self.send_json(local_features.read_ai_config())
-            except (LocalFeatureError, QwenEmbeddingError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-        if parsed.path == "/local-api/ai/embeddings/config":
-            try:
-                self.send_json(local_features.read_embedding_config())
-            except (LocalFeatureError, QwenEmbeddingError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-        if parsed.path == "/local-api/library/comic":
-            try:
-                comic = local_features.get_comic(parse_qs(parsed.query).get("id", [""])[0])
-                self.send_json({"comic": comic, "content_analysis": content_analysis.get(comic["id"]) if comic else None})
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/content-analysis":
-            try:
-                comic_id = parse_qs(parsed.query).get("id", [None])[0]
-                self.send_json(content_analysis.get(comic_id) if comic_id else content_analysis.overview())
-            except (LocalFeatureError, ValueError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/library/comics":
-            mode = str(parse_qs(parsed.query).get("mode", ["all"])[0])
-            self.send_json({"comics": local_features.list_comics(mode), "stats": local_features.stats()})
-            return
-        if parsed.path == "/local-api/library/stats":
-            self.send_json(local_features.stats())
-            return
-        if parsed.path == "/local-api/ai/profile":
-            self.send_json({"profile": local_features.read_profile(), "stats": local_features.stats()})
-            return
-        if parsed.path == "/local-api/ai/recommended-ids":
-            self.send_json({"ids": local_features.recommended_ids()})
-            return
-        if parsed.path == "/local-api/ai/discovery-excluded-ids":
-            self.send_json({"ids": local_features.discovery_excluded_ids()})
-            return
-        if parsed.path == "/local-api/ai/recommendations":
-            self.send_json({"runs": local_features.recommendation_history()})
-            return
-        if parsed.path == "/local-api/ai/interactions":
-            try:
-                query = parse_qs(parsed.query)
-                comic_id = query.get("comic_id", [None])[0]
-                raw_limit = query.get("limit", [200])[0]
-                self.send_json({
-                    "interactions": local_features.list_interactions(
-                        comic_id=comic_id,
-                        limit=raw_limit,
-                    )
-                })
-            except (LocalFeatureError, TypeError, ValueError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/features/stats":
-            self.send_json(local_features.feature_cache_stats())
-            return
-        if parsed.path == "/local-api/ai/embeddings/status":
-            try:
-                self.send_json(embedding_runtime.status())
-            except (LocalFeatureError, QwenEmbeddingError) as error:
+                self.send_json(translator.read_config())
+            except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         cache_target = self.parse_cache_target(parsed.path)
         if cache_target:
             kind, key = cache_target
-            query = parse_qs(parsed.query)
             try:
                 requested_age = int(query.get("max_age", [DEFAULT_MAX_AGE])[0])
             except (TypeError, ValueError):
@@ -703,42 +562,38 @@ class LocalHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/local-api/ai/recommendation-jobs", "/local-api/ai/recommendation-jobs/source", "/local-api/ai/recommendation-jobs/cancel"}:
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                if parsed.path.endswith("/source"):
-                    result = recommendation_jobs.upload(body.get("id"), body.get("source", {}))
-                elif parsed.path.endswith("/cancel"):
-                    result = recommendation_jobs.cancel(body.get("id"))
-                else:
-                    result = recommendation_jobs.submit(body)
-                self.send_json(result)
-            except (OSError, sqlite3.Error):
-                self.send_json({"error": "任务尚未确认保存，请保留浏览器缓存并重试"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
-            except (ValueError, TypeError, AttributeError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+        body = self.read_json_body()
+        if body is None:
             return
         if parsed.path == "/local-api/library/history":
             kind = parse_qs(parsed.query).get("kind", [""])[0]
-            body = self.read_json_body()
-            if body is None:
-                return
             try:
-                self.send_json(local_features.library_history(kind, body.get("items", []), legacy=body.get("legacy") is True))
-            except (LocalFeatureError, ValueError) as error:
+                self.send_json(library.library_history(kind, body.get("items", []), legacy=body.get("legacy") is True))
+            except LibraryError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/ratings":
+            try:
+                self.send_json({"rating": library.save_rating(body)})
+            except LibraryError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/preferences":
+            try:
+                self.send_json(library.set_preference(body))
+            except LibraryError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/search-history":
+            try:
+                self.send_json(library.search_history(body.get("query")))
+            except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
         if parsed.path == "/local-api/jm-proxy":
-            body = self.read_json_body()
-            if body is not None:
-                self.proxy_jm_request(body)
+            self.proxy_jm_request(body)
             return
         if parsed.path in {"/local-api/auth/login", "/local-api/auth/session"}:
-            body = self.read_json_body()
-            if body is None:
-                return
             try:
                 servers = normalize_proxy_servers(body.get("servers"))
                 if parsed.path == "/local-api/auth/login":
@@ -754,173 +609,34 @@ class LocalHandler(SimpleHTTPRequestHandler):
             except JmSessionError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.UNAUTHORIZED)
             return
-        if parsed.path == "/local-api/ai/config":
-            body = self.read_json_body()
-            if body is None:
-                return
+        if parsed.path == "/local-api/translation/config":
             try:
-                self.send_json(local_features.save_ai_config(body))
-            except LocalFeatureError as error:
+                self.send_json(translator.save_config(body))
+            except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
-        if parsed.path == "/local-api/ai/embeddings/config":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                self.send_json(local_features.save_embedding_config(body))
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/embeddings/test":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                if any(key in body for key in ("api_key", "api_base_url")):
-                    local_features.save_embedding_config(body)
-                self.send_json(embedding_runtime.test_connection())
-            except (LocalFeatureError, QwenEmbeddingError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
-            return
-        if parsed.path == "/local-api/ai/test":
-            body = self.read_json_body()
-            if body is None:
-                return
+        if parsed.path == "/local-api/translation/test":
             try:
                 if any(key in body for key in ("api_key", "base_url", "model")):
-                    local_features.save_ai_config(body)
-                self.send_json(local_features.test_ai())
-            except LocalFeatureError as error:
+                    translator.save_config(body)
+                self.send_json(translator.test())
+            except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
             return
-        if parsed.path == "/local-api/ai/translate":
-            body = self.read_json_body()
-            if body is None:
-                return
+        if parsed.path == "/local-api/organize":
             try:
-                self.send_json(local_features.translate_title(body.get("title")))
-            except LocalFeatureError as error:
+                self.send_json(translator.organize(body.get("items"), body.get("query")))
+            except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
             return
-        if parsed.path == "/local-api/library/comic":
-            body = self.read_json_body()
-            if body is None:
-                return
+        if parsed.path == "/local-api/translation":
             try:
-                comic = local_features.upsert_comic(body)
-                if comic_has_explicit_embedding_evidence(comic):
-                    embedding_runtime.enqueue_background(comic)
-                try:
-                    analysis = (content_analysis.enqueue(comic["id"]) if "rating" in body or "review" in body
-                                 else content_analysis.get(comic["id"]))
-                except Exception:
-                    analysis = {"status": "error", "text": "", "current": False,
-                                 "error": "评价已保存，内容分析未启动，请在设置中重试。"}
-                self.send_json({"comic": comic, "content_analysis": analysis})
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/content-analysis/update":
-            if self.read_json_body() is None:
-                return
-            try:
-                self.send_json(content_analysis.update_missing())
-            except (LocalFeatureError, ValueError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/library/feedback/states":
-            body = self.read_json_body()
-            if body is None:
-                return
-            self.send_json(local_features.feedback_states(body.get("ids")))
-            return
-        if parsed.path == "/local-api/library/favorites/sync":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                comics = body.get("comics")
-                result = local_features.sync_favorites(comics)
-                self.send_json(result)
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/profile/generate":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                self.send_json({"profile": local_features.generate_profile()})
-            except LocalFeatureError as error:
+                self.send_json(translator.translate(body.get("title")))
+            except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
-            return
-        if parsed.path == "/local-api/ai/recommendations/generate":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                self.send_json(local_features.generate_recommendations(body))
-            except QwenEmbeddingError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
-            except (LocalFeatureError, TypeError, ValueError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
-            return
-        if parsed.path in {"/local-api/ai/content/plan", "/local-api/ai/content/prepare"}:
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                from content_evidence import ContentEvidence
-                runtime = ContentEvidence(local_features)
-                if parsed.path.endswith("/plan"):
-                    candidates = body.get("candidates", [])
-                    if not isinstance(candidates, list) or len(candidates) > 300:
-                        raise ValueError("候选数量无效")
-                    if any(not isinstance(item, dict) or not str(item.get("id", "")).isdigit() for item in candidates):
-                        raise ValueError("候选编号无效")
-                    self.send_json(runtime.plan(candidates))
-                else:
-                    self.send_json(runtime.prepare(body))
-            except (LocalFeatureError, ValueError, TypeError) as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/recommendations/feedback":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                self.send_json(local_features.save_recommendation_feedback(body))
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/interactions":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                saved = local_features.record_interaction(body)
-                comic = body.get("comic") if isinstance(body.get("comic"), dict) else body
-                if saved.get("event_type") == "read_start":
-                    embedding_runtime.enqueue_background(comic)
-                self.send_json(saved)
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/local-api/ai/features":
-            body = self.read_json_body()
-            if body is None:
-                return
-            try:
-                self.send_json(local_features.save_item_features(body))
-            except LocalFeatureError as error:
-                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
         cache_target = self.parse_cache_target(parsed.path)
         if cache_target:
-            body = self.read_json_body()
-            if body is None:
-                return
             kind, key = cache_target
             atomic_json_write(CACHE_DIR / kind / f"{key}.json", {
                 "saved_at": time.time(),
@@ -950,9 +666,15 @@ class LocalHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "账号接口请求无效"}, status=HTTPStatus.BAD_REQUEST)
             return
         payload = None
+        content_type = ""
         if method == "POST":
             normalized = data if isinstance(data, dict) else {}
-            payload = urlencode({str(key): str(value) for key, value in normalized.items()}).encode("utf-8")
+            fields = {str(key): str(value) for key, value in normalized.items()}
+            if parsed_path.path in PROXY_MULTIPART_PATHS:
+                payload, content_type = encode_multipart_form(fields)
+            else:
+                payload = urlencode(fields).encode("utf-8")
+                content_type = "application/x-www-form-urlencoded;charset=UTF-8"
         try:
             servers = None
             state = jm_session.active()
@@ -968,7 +690,7 @@ class LocalHandler(SimpleHTTPRequestHandler):
                     "User-Agent": "JMComic-WebUI-Local/1.0",
                 }
                 if method == "POST":
-                    headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
+                    headers["Content-Type"] = content_type
                 request = Request(
                     f"https://{state['server']}{path}",
                     data=payload,
@@ -999,11 +721,17 @@ class LocalHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/local-api/library/history":
-            kind = parse_qs(parsed.query).get("kind", [""])[0]
+            query = parse_qs(parsed.query)
+            # `id` removes one entry (watch later); without it the whole list is cleared.
+            comic_id = query.get("id", [None])[0]
             try:
-                self.send_json(local_features.library_history(kind, clear=True))
-            except (LocalFeatureError, ValueError) as error:
+                self.send_json(library.library_history(query.get("kind", [""])[0], clear=comic_id is None, remove=comic_id))
+            except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/search-history":
+            query = parse_qs(parsed.query).get("q", [None])[0]
+            self.send_json(library.search_history(remove=query, clear=query is None))
             return
         if parsed.path == "/local-api/account":
             atomic_json_write(ACCOUNT_FILE, {"username": "", "password": ""}, private=True)
@@ -1014,11 +742,11 @@ class LocalHandler(SimpleHTTPRequestHandler):
             jm_session.clear()
             self.send_json({"configured": False, "username": ""})
             return
-        if parsed.path == "/local-api/ai/config":
-            self.send_json(local_features.clear_ai_config())
-            return
-        if parsed.path == "/local-api/ai/embeddings/config":
-            self.send_json(local_features.clear_embedding_config())
+        if parsed.path == "/local-api/translation/config":
+            try:
+                self.send_json(translator.clear_config())
+            except TranslationError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         if parsed.path == "/local-api/cache":
             for path in cache_files():
@@ -1089,8 +817,6 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        embedding_runtime.stop()
-        content_analysis.stop()
         server.server_close()
 
 

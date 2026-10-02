@@ -35,11 +35,13 @@
                             <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
                             筛选 <b class="badge" data-filter-count hidden>0</b>
                         </button>
+                        <button class="btn btn-outline btn-sm" type="button" data-organize aria-pressed="false" title="用 AI 按系列整理已加载的结果">AI 整理</button>
                         <button class="btn btn-ghost btn-sm" type="button" data-filter-reset disabled>重置筛选</button>
                     </div>
                 </div>
                 <aside class="filter-panel" aria-label="筛选条件"></aside>
                 <div class="listing-results">
+                    <div class="organized" data-organized hidden></div>
                     <div class="comic-grid" data-results></div>
                     <div class="feed-footer" data-feed></div>
                 </div>

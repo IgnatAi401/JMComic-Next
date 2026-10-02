@@ -2,7 +2,7 @@
 """Serve real UI modules with neutral in-memory data for local Safari checks.
 
 Run: python3 tests/serve_ui_fixture.py
-Open: http://127.0.0.1:48128/index.html (also setting/messages/reader/chapter/ai).
+Open: http://127.0.0.1:48128/index.html (also setting/messages/reader/chapter).
 This server never starts the backend, reads project/data, or proxies requests.
 """
 
@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "project"
-PAGES = {"index", "setting", "messages", "reader", "chapter", "ai", "library", "search", "latest", "categories", "history-migration"}
+PAGES = {"index", "setting", "messages", "reader", "chapter", "library", "search", "latest", "categories", "history-migration"}
 LOGOS = {"1e1c27c3-4553-4d6d-ad8c-d06dacbbfb5a.png", "b5c2a091-eb74-4b78-99dd-b52dc2a1dfe5.png"}
 REPORT = Path(tempfile.gettempdir()) / "jmcomic-ui-fixture-report.json"
 ENTRY = re.compile(r'<script\s+type="module"\s+src="\./src/pages/[^\"]+"\s*></script>')

@@ -3,8 +3,13 @@ import { libraryStore } from "../data/LibraryStore.js";
 import { comicCardHtml } from "../ui/comic-card.js";
 import { coverHtml, hydrateCovers } from "../ui/covers.js";
 import { asText, authorsOf, detailUrl, escapeHtml, formatDateTime, searchUrl, textList } from "../ui/dom.js";
+import { icon } from "../ui/icons.js";
+import { hydrateRichCards } from "../ui/rich-cards.js";
+import { loadPreferences, preferenceAuthorsHtml, preferenceLegendHtml, preferenceTagsHtml } from "../ui/preferences.js";
 import { mountShell } from "../ui/shell.js";
 import { renderPageError, stateHtml } from "../ui/states.js";
+import { showToast } from "../ui/toast.js";
+import { syncWatchLaterButtons } from "../ui/watch-later.js";
 
 const MAX_RANDOM_ATTEMPTS = 12;
 const RANDOM_BATCH_SIZE = 4;
@@ -118,6 +123,7 @@ class RandomPick {
         const coverUrl = asText(album.cover_url || album.coverUrl, jmApi.getCoverImageURL(id));
         const timestamp = Number(album.addtime);
         const href = detailUrl(id);
+        const preferences = await loadPreferences();
 
         if (record) {
             try {
@@ -135,13 +141,13 @@ class RandomPick {
         this.q("id").textContent = `JM ${id}`;
         this.q("status").textContent = status;
         this.q("title").textContent = title;
-        this.q("author").textContent = authors.length ? authors.join(" · ") : "未知作者";
+        this.q("author").innerHTML = preferenceAuthorsHtml(authors, preferences.authors, { link: true, fallback: "未知作者" });
         this.q("description").textContent = asText(album.description, "这本作品暂时没有简介，打开详情继续探索。");
         this.q("chapters").textContent = String(chapters);
         this.q("pages").textContent = String(album.total_photos ?? "—");
         this.q("comments").textContent = String(album.comment_total ?? "0");
         this.q("date").textContent = timestamp ? new Date(timestamp * 1000).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit" }) : "—";
-        this.q("tags").innerHTML = tags.map((tag) => `<a class="tag" href="${searchUrl(tag)}">${escapeHtml(tag)}</a>`).join("");
+        this.q("tags").innerHTML = preferenceTagsHtml(tags, preferences.tags);
 
         const open = this.q("open");
         open.href = href;
@@ -150,6 +156,10 @@ class RandomPick {
         cover.href = href;
         cover.removeAttribute("aria-disabled");
         cover.setAttribute("aria-label", `查看《${title}》详情`);
+        const later = this.q("later");
+        later.dataset.watchLater = JSON.stringify({ id, name: title, author: authors, cover_url: coverUrl });
+        later.hidden = false;
+        syncWatchLaterButtons(this.root);
         this.mountCover(cover, [coverUrl, jmApi.getCoverImageURL(id)], title);
         this.renderPager();
     }
@@ -218,23 +228,56 @@ class RandomPick {
     }
 }
 
-function renderContinueReading() {
-    const section = document.querySelector(".continue");
-    const items = libraryStore.getHistory().slice(0, 8);
+const sideAuthorHtml = (item) => {
+    const author = authorsOf(item)[0];
+    return author ? `<a class="author-name" href="${searchUrl(author)}">${escapeHtml(author)}</a>` : "未知作者";
+};
+
+function renderSideList(section, items, { removable = false } = {}) {
     section.hidden = !items.length;
+    const side = section.closest(".home-side");
+    side.hidden = [...side.querySelectorAll(".continue")].every((node) => node.hidden);
     if (!items.length) return;
     section.querySelector(".continue-list").innerHTML = items.map((item) => {
         const title = asText(item.name ?? item.title, "未命名作品");
         const href = detailUrl(item.id);
-        return `<li class="continue-item">
+        return `<li class="continue-item${removable ? " later-item" : ""}">
             ${coverHtml(item, { href })}
             <div class="continue-copy">
                 <a class="continue-title" href="${href}">${escapeHtml(title)}</a>
-                <span class="continue-meta">${escapeHtml(authorsOf(item)[0] || "未知作者")}${item.savedAt ? ` · ${escapeHtml(formatDateTime(item.savedAt))}` : ""}</span>
+                <span class="continue-meta">${sideAuthorHtml(item)}${item.savedAt ? ` · ${escapeHtml(formatDateTime(item.savedAt))}` : ""}</span>
             </div>
+            ${removable ? `<button class="later-remove" type="button" data-later-remove="${escapeHtml(item.id)}" aria-label="从稍后再看移除《${escapeHtml(title)}》" title="移除">${icon("close")}</button>` : ""}
         </li>`;
     }).join("");
     hydrateCovers(section);
+}
+
+function renderContinueReading() {
+    renderSideList(document.querySelector(".continue.reading"), libraryStore.getHistory().slice(0, 8));
+}
+
+function renderWatchLater() {
+    renderSideList(document.querySelector(".continue.later"), libraryStore.getWatchLater().slice(0, 8), { removable: true });
+}
+
+function bindWatchLater() {
+    const section = document.querySelector(".continue.later");
+    section.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-later-remove]");
+        if (!button || button.disabled) return;
+        button.disabled = true;
+        try {
+            await libraryStore.removeWatchLater(button.dataset.laterRemove);
+        } catch (error) {
+            button.disabled = false;
+            showToast(error?.message || "移除失败，请重试", "warning");
+        }
+    });
+    window.addEventListener("jm-library-change", () => {
+        renderWatchLater();
+        renderContinueReading();
+    });
 }
 
 const cleanLabel = (value) => String(value || "").replace(/[→>-]*右滑看更多[→>-]*/gi, "").replace(/\s+/g, " ").trim();
@@ -247,7 +290,7 @@ const displaySlug = (slug) => {
 
 async function renderShelves() {
     const root = document.querySelector(".shelves");
-    const promotion = await jmApi.getPromotionContent();
+    const [promotion, preferences] = await Promise.all([jmApi.getPromotionContent(), loadPreferences()]);
     const visible = (Array.isArray(promotion) ? promotion : []).filter((section) => {
         const slug = String(section?.slug || "").trim().toLowerCase();
         const title = String(section?.title || "").trim();
@@ -262,7 +305,7 @@ async function renderShelves() {
         root.innerHTML = stateHtml({ title: "今天的书架还是空的", message: "稍后再来看看，或者去分类里逛逛。", action: { href: "./categories.html", label: "浏览分类" } });
         return;
     }
-    root.innerHTML = sections.map((section, sectionIndex) => {
+    root.innerHTML = preferenceLegendHtml(preferences) + sections.map((section, sectionIndex) => {
         const title = cleanLabel(section.title);
         const slug = displaySlug(section.slug);
         const heading = slug || title || "精选";
@@ -272,10 +315,11 @@ async function renderShelves() {
                 <h2 class="section-title" id="shelf-${sectionIndex}">${escapeHtml(heading)}${sub ? ` <small class="shelf-sub">${escapeHtml(sub)}</small>` : ""}</h2>
                 <span class="section-meta num">${section.content.length} 部</span>
             </div>
-            <div class="shelf-items">${section.content.map((comic, index) => comicCardHtml(comic, { index: sectionIndex === 0 ? String(index + 1).padStart(2, "0") : "" })).join("")}</div>
+            <div class="comic-grid shelf-items">${section.content.map((comic) => comicCardHtml(comic)).join("")}</div>
         </section>`;
     }).join("");
     hydrateCovers(root);
+    hydrateRichCards(root);
 }
 
 class HomePage {
@@ -283,12 +327,13 @@ class HomePage {
         mountShell();
         document.querySelector("[data-today]").textContent = new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
         await jmApi.init();
+        bindWatchLater();
         const random = new RandomPick(document.querySelector(".random"));
         // The random pick and the shelves are independent; load them side by side.
         await Promise.all([
             random.init()
                 .catch((error) => { document.querySelector("[data-random-status]").textContent = error.message || "随机历史暂时不可用"; })
-                .finally(renderContinueReading),
+                .finally(() => { renderWatchLater(); renderContinueReading(); }),
             renderShelves().catch((error) => renderPageError(".shelves", error, { title: "书架加载失败", action: null })),
         ]);
     }

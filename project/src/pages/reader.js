@@ -5,7 +5,7 @@ import { writeLocalStorage } from "../utils/BrowserStorage.js";
 import { hasMissingComicChapterNames } from "../utils/ComicChapterNames.js";
 import { mountShell, appShell } from "../ui/shell.js";
 import { chaptersOf } from "../ui/chapters.js";
-import { comicPayload, detailUrl, escapeHtml, readerUrl } from "../ui/dom.js";
+import { detailUrl, escapeHtml, readerUrl } from "../ui/dom.js";
 import { Comments } from "../ui/comments.js";
 import { RatingEditor } from "../ui/rating.js";
 import { Sheet } from "../ui/overlay.js";
@@ -15,7 +15,6 @@ import { renderPageError } from "../ui/states.js";
 import { showToast } from "../ui/toast.js";
 
 export class ReaderPage {
-    milestones = new Set();
     async init() {
         mountShell({ chrome: false });
         const params = new URLSearchParams(location.search);
@@ -25,6 +24,8 @@ export class ReaderPage {
         this.chapter = await jmApi.getComicChapter(this.chapterId);
         this.albumId ||= String(this.chapter.series_id || this.chapter.id);
         this.viewport = new ReaderViewport(document.querySelector(".reader-images"), this.chapter, (value) => this.progress(value));
+        const startPage = Number(params.get("page"));
+        if (Number.isInteger(startPage) && startPage > 1) this.viewport.seek(startPage);
         document.querySelector(".reader-loading").hidden = true;
         document.querySelector(".reader-actions").hidden = false;
         this.bind();
@@ -36,8 +37,7 @@ export class ReaderPage {
         new RatingEditor(document.querySelector(".reader-rating"), this.album).mount();
         new Comments(document.querySelector(".reader-comments"), this.chapterId, { title: "本话评论" }).mount({ lazy: true });
         document.querySelector(".reader-afterword").hidden = false;
-        this.readStartPromise = localRuntime.recordInteraction({ event_type: "read_start", comic_id: String(this.album.id), source: "reader", metadata: { chapter_id: String(this.chapterId) }, comic: comicPayload(this.album, jmApi.getCoverImageURL(this.album.id)) });
-        this.readStartPromise.finally(() => { this.readReady = true; if (this.pendingProgress) this.recordProgress(this.pendingProgress); });
+        this.bindLaterRemove();
         libraryStore.recordHistory(this.album).catch((error) => showToast(`历史保存失败：${error.message}`, "warning"));
         writeLocalStorage(`jm_last_chapter_${this.album.id}`, String(this.chapterId));
     }
@@ -76,16 +76,20 @@ export class ReaderPage {
         document.querySelector("[data-reader-progress]").setAttribute("aria-label", `阅读进度，第 ${value.page} 页，共 ${value.pages} 页，点击跳转`);
         document.querySelector(".reader-track-fill").style.width = `${value.progress * 100}%`;
         if (this.progressSheet && !this.progressSheet.isOpen) this.syncProgressForm(value);
-        this.pendingProgress = value;
-        this.recordProgress(value);
     }
 
-    recordProgress(value) {
-        if (!this.readReady || !this.album?.id || !Number.isFinite(value?.progress)) return;
-        const milestone = [1, 0.75, 0.5, 0.25].find((threshold) => value.progress >= threshold);
-        if (!milestone || this.milestones.has(milestone)) return;
-        this.milestones.add(milestone);
-        localRuntime.recordInteraction({ event_type: milestone === 1 ? "read_complete" : "read_progress", comic_id: String(this.album.id), source: "reader", metadata: { chapter_id: String(this.chapterId), progress: milestone, page: value.page, pages: value.pages } });
+    bindLaterRemove() {
+        const box = document.querySelector(".reader-later");
+        const button = box.querySelector("button");
+        const sync = () => { box.hidden = !libraryStore.isWatchLater(this.album.id); };
+        button.onclick = async () => {
+            button.disabled = true;
+            try { await libraryStore.removeWatchLater(this.album.id); showToast("已移出稍后再看"); }
+            catch (error) { showToast(error?.message || "移除失败，请重试", "warning"); }
+            finally { button.disabled = false; sync(); }
+        };
+        window.addEventListener("jm-library-change", sync);
+        libraryStore.init().then(sync).catch(() => {});
     }
 
     renderChapters() {

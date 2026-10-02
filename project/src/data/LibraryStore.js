@@ -45,7 +45,7 @@ function normalizeRandomAlbum(album) {
 }
 
 class LibraryStore {
-    lists = { reading: [], random: [] };
+    lists = { reading: [], random: [], later: [] };
     pending = null;
     queue = Promise.resolve();
 
@@ -68,16 +68,21 @@ class LibraryStore {
             // Keep legacy data on failure or if another tab changed it during import.
             if (items.length && readLocalStorage(key) === original) removeLocalStorage(key);
         }
+        this.lists.later = (await localRuntime.request("./local-api/library/history?kind=later")).items;
         this.#notify();
     }
 
     getHistory() { return this.lists.reading; }
     getRandomHistory() { return this.lists.random; }
+    getWatchLater() { return this.lists.later; }
+    isWatchLater(id) { return this.lists.later.some((item) => String(item.id) === String(id)); }
 
+    /** `clear` empties the list; a string `clear` removes only that comic id. */
     #mutate(kind, items, clear = false) {
         const operation = this.queue.then(async () => {
             await this.init();
-            const result = await localRuntime.request(`./local-api/library/history?kind=${kind}`, clear
+            const target = typeof clear === "string" ? `&id=${encodeURIComponent(clear)}` : "";
+            const result = await localRuntime.request(`./local-api/library/history?kind=${kind}${target}`, clear
                 ? { method: "DELETE" } : { method: "POST", body: { items } });
             this.lists[kind] = result.items;
             this.#notify();
@@ -90,6 +95,9 @@ class LibraryStore {
     recordRandomHistory(album) { return this.#mutate("random", [normalizeRandomAlbum(album)]); }
     clearHistory() { return this.#mutate("reading", [], true); }
     clearRandomHistory() { return this.#mutate("random", [], true); }
+    addWatchLater(album) { return this.#mutate("later", [normalizeRandomAlbum({ ...album, savedAt: Date.now() })]); }
+    removeWatchLater(id) { return this.#mutate("later", [], String(id)); }
+    clearWatchLater() { return this.#mutate("later", [], true); }
     #notify() { window.dispatchEvent(new CustomEvent("jm-library-change")); }
 }
 
