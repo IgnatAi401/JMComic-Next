@@ -27,9 +27,10 @@ export async function mountListing(search = false) {
         const results = new ListingResults({ grid: document.querySelector("[data-results]"), footer: document.querySelector("[data-feed]"), state: document.querySelector("[data-result-state]"), query });
         const organizeButton = document.querySelector("[data-organize]");
         const organizer = organizeButton && new ResultOrganizer({ button: organizeButton, view: document.querySelector("[data-organized]"), results, hide: [document.querySelector("[data-results]")] });
-        const filters = new ListingFilterPanel({ panel: document.querySelector(".filter-panel"), toggle: document.querySelector("[data-filter-toggle]"), reset: document.querySelector("[data-filter-reset]"), onChange: (value) => { organizer?.restore(value); results.setFilters(value); } });
+        const filters = new ListingFilterPanel({ panel: document.querySelector(".filter-panel"), toggle: document.querySelector("[data-filter-toggle]"), reset: document.querySelector("[data-filter-reset]"), onChange: (value) => { results.setFilters(value); organizer?.setFilters(value); } });
         filters.init();
-        organizer?.restore(filters.filters);
+        organizer?.setFilters(filters.filters);
+        organizer?.restore();
         filters.loadCategories().catch((error) => showToast(`分类暂时不可用：${error.message}`, "warning"));
         await results.feed.restart();
     } catch (error) { renderPageError("[data-results]", error); }

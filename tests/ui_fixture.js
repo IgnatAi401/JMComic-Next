@@ -271,10 +271,15 @@ async function runChecks(shellOnly = false) {
                 click('[data-reorganize]', organized); await sleep(150);
                 check("可重新整理", !document.querySelector('[data-organized]').hidden && !!document.querySelector('[data-organized] [data-reorganize]'));
                 click('[data-organize]'); check("可返回原始列表", document.querySelector('[data-organized]').hidden && !document.querySelector('[data-results]').hidden);
+                click('[data-organize]'); await sleep(50);
+                const shownOrganized = () => document.querySelectorAll('[data-organized] [data-group]:not([hidden]) .comic-card:not([hidden])').length;
+                click('[data-filter="order"] .chip[data-value="mr"]'); await sleep(300);
+                check("排序不改变整理结果", !document.querySelector('[data-organized]').hidden && document.querySelectorAll('[data-organized] [data-group]:not([hidden])').length === 2 && shownOrganized() === 8 && document.querySelectorAll('[data-unorganized]:not([hidden]) .comic-card').length === 4);
                 const serial = document.querySelector('[data-hide-serial]');
-                serial.checked = true; serial.dispatchEvent(new Event('change', { bubbles: true })); await sleep(250);
+                serial.checked = true; serial.dispatchEvent(new Event('change', { bubbles: true })); await sleep(300);
+                check("筛选同样作用于已整理作品", !document.querySelector('[data-organized]').hidden && shownOrganized() === 0 && !document.querySelector('[data-organized-empty]').hidden && document.querySelector('[data-unorganized]').hidden);
                 serial.checked = false; serial.dispatchEvent(new Event('change', { bubbles: true })); await sleep(300);
-                check("同一关键词自动使用整理缓存", !document.querySelector('[data-organized]').hidden && document.querySelectorAll('[data-organized] .organized-group:not([hidden]) .comic-card').length === 12);
+                check("取消筛选恢复已整理作品", shownOrganized() === 8 && document.querySelector('[data-organized-empty]').hidden);
             }
         } else if (page === "index") {
             check("随机与书架完整", !!document.querySelector('[data-random-open]').href && document.querySelectorAll('.shelf').length === 2);
