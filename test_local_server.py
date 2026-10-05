@@ -231,6 +231,87 @@ class CheckInProxyTests(unittest.TestCase):
         self.assertEqual(local_server.PROXY_PATH_METHODS["/daily_chk"], {"POST"})
 
 
+class BackgroundJobTests(unittest.TestCase):
+    """Slow routes run as jobs so remote access through a proxy never holds one long request."""
+
+    def setUp(self):
+        local_server.jobs.clear()
+        self.addCleanup(local_server.jobs.clear)
+        self.server = local_server.ThreadingHTTPServer(("127.0.0.1", 0), local_server.LocalHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def call(self, path, body=None, job=False):
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+        headers = {"Content-Type": "application/json"} | ({"X-Local-Job": "start"} if job else {})
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        try:
+            with urlopen(Request(self.base + path, data=data, headers=headers), timeout=5) as response:
+                return response.status, response.headers.get("X-Local-Job"), json.loads(response.read())
+        except HTTPError as error:
+            return error.code, error.headers.get("X-Local-Job"), json.loads(error.read())
+
+    def poll(self, job_id):
+        for _ in range(300):
+            status, state, value = self.call(f"/local-api/jobs?id={job_id}")
+            if state != "running":
+                return status, state, value
+            threading.Event().wait(0.01)
+        self.fail("job did not finish")
+
+    def test_fast_job_answers_inline_with_the_direct_route_result(self):
+        with patch.object(local_server.translator, "translate", return_value={"translation": "译名", "model": "demo"}):
+            self.assertEqual(self.call("/local-api/translation", {"title": "T"}, job=True), (200, "done", {"translation": "译名", "model": "demo"}))
+
+    def test_slow_job_is_polled_and_replays_errors_and_proxy_status(self):
+        release = threading.Event()
+
+        def slow_translate(_title):
+            release.wait(5)
+            raise local_server.TranslationError("模型没有返回正文")
+
+        with patch.object(local_server, "JOB_INLINE_WAIT", 0.05), \
+                patch.object(local_server.translator, "translate", side_effect=slow_translate):
+            status, state, value = self.call("/local-api/translation", {"title": "T"}, job=True)
+            self.assertEqual((status, state), (202, "accepted"))
+            self.assertEqual(self.call(f"/local-api/jobs?id={value['job']}")[:2], (202, "running"))
+            release.set()
+            self.assertEqual(self.poll(value["job"]), (502, "done", {"error": "模型没有返回正文"}))
+        self.assertEqual(self.call("/local-api/jobs?id=missing")[:2], (404, "missing"))
+        # Routes outside the allow-list ignore the header and answer directly.
+        self.assertEqual(self.call("/local-api/preferences", job=True)[1], None)
+
+    def test_organize_job_joins_duplicates_and_saves_cache_on_the_server(self):
+        release = threading.Event()
+        result = {"groups": [{"title": "某系列", "items": [{"id": "1", "note": "前篇"}]}], "model": "demo"}
+
+        def slow_organize(_items, _query):
+            release.wait(5)
+            return result
+
+        body = {"items": [{"id": "1", "title": "A"}], "query": "X", "cache_key": "skey1",
+                "comics": [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}, "bad"]}
+        with patch.object(local_server, "JOB_INLINE_WAIT", 0.05), \
+                patch.object(local_server.translator, "organize", side_effect=slow_organize) as organize:
+            first = self.call("/local-api/organize", body, job=True)[2]["job"]
+            self.assertEqual(self.call("/local-api/organize", body, job=True)[2]["job"], first)
+            self.assertNotEqual(self.call("/local-api/organize", body | {"force": True}, job=True)[2]["job"], first)
+            release.set()
+            self.assertEqual(self.poll(first), (200, "done", result | {"cached": True}))
+        self.assertEqual(organize.call_count, 2)
+        saved = json.loads((local_server.CACHE_DIR / "organize" / "skey1.json").read_text(encoding="utf-8"))["data"]
+        self.assertEqual((saved["groups"], saved["comics"]), (result["groups"], [{"id": "1", "name": "A"}]))
+
+    def test_unexpected_worker_errors_finish_the_job(self):
+        with patch.object(local_server.translator, "translate", side_effect=RuntimeError("boom")):
+            status, state, value = self.call("/local-api/translation", {"title": "T"}, job=True)
+        self.assertEqual((status, state), (500, "done"))
+        self.assertIn("boom", value["error"])
+
+
 class OrganizeCacheTests(unittest.TestCase):
     def test_organize_results_use_the_seven_day_local_cache(self):
         handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
@@ -317,6 +398,56 @@ class OrganizeCacheTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("Content-type"), "application/x-www-form-urlencoded;charset=UTF-8")
         self.assertEqual(request.data, b"id=123")
+
+    def test_blank_checkin_body_becomes_an_empty_result(self):
+        state = {"server": "api.example.com", "session": "session", "user": {"uid": "42"}}
+        for path, method, expected in (
+            ("/daily_chk", "POST", b'{"code":200,"data":[]}'),
+            ("/daily?user_id=42", "GET", b'{"code":200,"data":[]}'),
+            ("/like", "POST", b" "),
+        ):
+            handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+            handler.send_json = Mock()
+            handler.send_raw_json = Mock()
+            with (
+                patch.object(local_server.jm_session, "active", return_value=state),
+                patch("local_server.urlopen", return_value=_ProxyResponse(b" ")),
+            ):
+                handler.proxy_jm_request({
+                    "path": path,
+                    "method": method,
+                    "data": {"user_id": "42", "daily_id": "68"},
+                    "token": "token",
+                    "tokenParam": "1,3.2.0",
+                })
+            handler.send_raw_json.assert_called_once_with(expected, status=HTTPStatus.OK)
+
+    def test_session_refresh_logs_in_again_even_with_a_live_session(self):
+        manager = local_server.JmSessionManager()
+        manager.server, manager.session, manager.profile = "old.example.com", "stale", {"uid": "42"}
+        login = Mock(return_value=("api.example.com", "fresh", {"uid": "42", "username": "u"}))
+        with (
+            patch("local_server.read_account", return_value={"username": "u", "password": "p"}),
+            patch("local_server.request_jm_login", login),
+        ):
+            self.assertEqual(manager.ensure(["api.example.com"])["session"], "stale")
+            login.assert_not_called()
+            state = manager.refresh(["api.example.com"])
+        login.assert_called_once_with("u", "p", ["api.example.com"])
+        self.assertEqual((state["server"], state["session"]), ("api.example.com", "fresh"))
+
+    def test_auth_session_route_forces_refresh_only_when_asked(self):
+        for body, method in (({"servers": ["api.example.com"], "refresh": True}, "refresh"), ({"servers": ["api.example.com"]}, "ensure")):
+            handler = _handler_with_body(body, "/local-api/auth/session")
+            state = {"server": "s", "session": "x", "user": {"uid": "42"}}
+            with (
+                patch.object(local_server.jm_session, "refresh", return_value=state) as refresh,
+                patch.object(local_server.jm_session, "ensure", return_value=state) as ensure,
+            ):
+                handler.do_POST()
+            (refresh if method == "refresh" else ensure).assert_called_once()
+            (ensure if method == "refresh" else refresh).assert_not_called()
+            handler.send_json.assert_called_once_with({"authenticated": True, "user": {"uid": "42"}})
 
 
 class ServerLifecycleTests(unittest.TestCase):

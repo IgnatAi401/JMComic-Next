@@ -31,7 +31,7 @@ export const organizeCacheKey = (query) => hashKey(JSON.stringify([
 /**
  * Search-page "AI 整理": sends every known result to the configured model, which
  * groups them by series and writes a section title plus a note for each comic.
- * The grouping is cached locally for 7 days per keyword and restored on the next visit.
+ * The grouping is cached for 7 days per keyword and restored on the next visit.
  * The sort order never changes the grouping; it only orders the trailing "未整理"
  * section of comics loaded after it. Time / category / single-chapter filters apply
  * to both: an organized comic stays visible only once the filtered feed returns it.
@@ -108,17 +108,13 @@ export class ResultOrganizer {
                 id: String(comic.id),
                 title: asText(comic.name ?? comic.title),
                 author: authorsOf(comic).join(" / "),
-            })), this.results.query);
+            })), this.results.query, { cacheKey: key, comics, force: Boolean(this.organized) });
             if (generation !== this.generation) return;
             this.organized = this.normalize(result, comics);
             this.setBusy(false);
             this.show();
-            localRuntime.writeCache(CACHE_KIND, key, {
-                model: this.organized.model,
-                savedAt: Date.now(),
-                groups: this.organized.groups,
-                comics: [...this.organized.comics.values()],
-            });
+            // The server saves the grouping (not this browser) so every device sees it.
+            if (!result.cached) showToast("整理结果未能保存到服务器，其他设备看不到这次整理", "warning");
         } catch (error) {
             if (generation !== this.generation) return;
             this.setBusy(false);

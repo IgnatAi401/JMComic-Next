@@ -82,10 +82,14 @@ Object.assign(localRuntime, {
     testTranslationConfig: constant({ ok: true, model: "fixture-model" }),
     translateTitle: async (title) => ({ translation: `${title}（译）`, model: "fixture-model" }),
     // Groups only the first 8 so the trailing "未整理" section is exercised too.
-    organizeComics: async (items) => ({ model: "fixture-model", groups: [
-        { title: "示例系列上篇", items: items.slice(0, 5).map((item, index) => ({ id: item.id, note: `第 ${index + 1} 话` })) },
-        { title: "其他", items: items.slice(5, 8).map((item) => ({ id: item.id, note: "" })) },
-    ] }),
+    organizeComics: async (items, _query, { cacheKey, comics: known }) => {
+        const groups = [
+            { title: "示例系列上篇", items: items.slice(0, 5).map((item, index) => ({ id: item.id, note: `第 ${index + 1} 话` })) },
+            { title: "其他", items: items.slice(5, 8).map((item) => ({ id: item.id, note: "" })) },
+        ];
+        fixtureCache.set(`organize/${cacheKey}`, clone({ model: "fixture-model", savedAt: Date.now(), groups, comics: known }));
+        return { model: "fixture-model", groups, cached: true };
+    },
     getRating: async (id) => clone(ratings.get(String(id)) ?? null),
     getRatings: async () => clone([...ratings.values()]),
     saveRating: async (value) => {
@@ -104,7 +108,7 @@ Object.assign(localRuntime, {
     recordSearch: async (query) => { searchHistory = [{ query, savedAt: Date.now() }, ...searchHistory.filter((item) => item.query !== query)]; return clone(searchHistory); },
     removeSearchHistory: async (query) => { searchHistory = query == null ? [] : searchHistory.filter((item) => item.query !== query); return clone(searchHistory); },
     readCache: async (kind, key) => clone(fixtureCache.get(`${kind}/${key}`) ?? null),
-    writeCache: async (kind, key, data) => { if (kind === "organize") fixtureCache.set(`${kind}/${key}`, clone(data)); }, getWebChapterNames: constant({ chapters: series }),
+    writeCache: constant(null), getWebChapterNames: constant({ chapters: series }),
 });
 authSession.setProfile(user);
 authSession.configured = true;

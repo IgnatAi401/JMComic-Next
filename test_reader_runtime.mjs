@@ -268,6 +268,35 @@ test("invalid successful local JSON is an error, while missing optional cache re
     await assert.rejects(runtime.request("fixture:local"), /503/);
 });
 
+test("slow local routes run as polled jobs that survive dropped polls and proxy error pages", async () => {
+    const calls = [];
+    const reply = (status, state, data) => ({ ok: status < 400, status, headers: { get: (name) => (name === "X-Local-Job" ? state : null) }, json: async () => data });
+    const polls = [
+        () => { throw new TypeError("Load failed"); },
+        () => reply(504, null, {}),
+        () => reply(202, "running", { status: "running" }),
+        () => reply(200, "done", { authenticated: true }),
+    ];
+    const runtime = loadModule("local/LocalRuntime.js", "localRuntime", {
+        setTimeout: (callback, ms) => setTimeout(callback, ms > 2000 ? ms : 0),
+        fetch: async (path, init) => {
+            calls.push([path, init.headers?.["X-Local-Job"] ?? ""]);
+            return path.includes("/jobs?") ? polls.shift()() : reply(202, "accepted", { job: "j1" });
+        },
+    });
+    assert.deepEqual(await runtime.ensureAccountSession(["a.example"]), { authenticated: true });
+    assert.deepEqual(calls[0], ["./local-api/auth/session", "start"]);
+    assert.equal(calls.length, 5);
+    assert.ok(calls.slice(1).every(([path]) => path === "./local-api/jobs?id=j1"));
+
+    // A job the server no longer knows (restart) surfaces its error instead of polling forever.
+    polls.push(() => reply(404, "missing", { error: "后台任务不存在或已过期" }));
+    await assert.rejects(runtime.translateTitle("T"), /后台任务不存在/);
+    // An older server or a direct validation error is used as the final answer.
+    const direct = loadModule("local/LocalRuntime.js", "localRuntime", { fetch: async () => reply(400, null, { error: "标题为空" }) });
+    await assert.rejects(direct.translateTitle(""), /标题为空/);
+});
+
 test("reader concurrency is local to the device and rejects unreasonable values", async () => {
     const stored = new Map();
     const events = [];
@@ -410,21 +439,33 @@ test("image restoration frees every allocated canvas when a later slice fails", 
     }
 });
 
-function checkInHarness(replies) {
+function checkInHarness(replies, { relogin = { user: { uid: '42' } } } = {}) {
     const requests = [];
+    const relogins = [];
+    const fetch = async (url, options) => {
+        assert.equal(url, './local-api/jm-proxy');
+        const request = JSON.parse(options.body);
+        requests.push(request);
+        const next = replies.shift();
+        if (next instanceof Error) throw next;
+        if (!next) throw new Error('Unexpected request');
+        return { ok: true, status: 200, json: async () => next };
+    };
     const api = loadModule('api/JmcomicApi.js', 'jmApi', {
         crypto: { calculateMD5: () => 'test', decryptData: (_key, value) => JSON.parse(value) },
-        fetch: async (_url, options) => {
-            const request = JSON.parse(options.body);
-            requests.push(request);
-            const next = replies.shift();
-            if (next instanceof Error) throw next;
-            if (!next) throw new Error('Unexpected request');
-            return { ok: true, status: 200, json: async () => next };
+        fetch,
+        // Account calls go through the local job runner; its polling is covered separately.
+        localRuntime: {
+            fetchJob: (url, init) => fetch(url, init),
+            ensureAccountSession: async (servers, options) => {
+                relogins.push(options);
+                if (relogin instanceof Error) throw relogin;
+                return relogin;
+            },
         },
     });
     api.servers = ['fixture.invalid'];
-    return { api, requests };
+    return { api, requests, relogins };
 }
 const dailyActivity = () => ({ code: 200, data: { daily_id: 68 } });
 
@@ -458,11 +499,37 @@ test('check-in accepts the real reward-only success response', async () => {
     assert.equal((await api.dailyCheckIn('42')).message, '签到成功：获得 10 金币、10 经验');
 });
 
-test('check-in reports an empty response as unparsed parameters, not success', async () => {
+test('check-in treats an empty response as a dead login: re-logs in and retries once', async () => {
     for (const data of [[], {}, JSON.stringify([])]) {
-        const { api } = checkInHarness([dailyActivity(), { code: 200, data }]);
-        await assert.rejects(api.dailyCheckIn('42'), /空结果.*没有收到签到参数/);
+        const { api, requests, relogins } = checkInHarness([
+            dailyActivity(), { code: 200, data },
+            dailyActivity(), { code: 200, data: { msg: 'Jcoin:10 EXP:10' } },
+        ]);
+        assert.equal((await api.dailyCheckIn('42')).status, 'success');
+        assert.deepEqual(relogins.map((options) => options.refresh), [true]);
+        assert.equal(requests.length, 4);
     }
+    // An empty activity lookup is the same dead session; nothing was submitted yet.
+    const lookup = checkInHarness([{ code: 200, data: [] }, dailyActivity(), { code: 200, data: { msg: '今天已签到' } }]);
+    assert.equal((await lookup.api.dailyCheckIn('42')).status, 'already');
+    assert.equal(lookup.relogins.length, 1);
+    assert.deepEqual(lookup.requests.map((request) => request.path), ['/daily?user_id=42', '/daily?user_id=42', '/daily_chk']);
+});
+
+test('check-in reports a still-empty response after re-login and failed re-logins', async () => {
+    const still = checkInHarness([dailyActivity(), { code: 200, data: [] }, dailyActivity(), { code: 200, data: [] }]);
+    await assert.rejects(still.api.dailyCheckIn('42'), /已重新登录.*没有收到签到参数/);
+    assert.equal(still.relogins.length, 1);
+    assert.equal(still.requests.length, 4);
+    const lookup = checkInHarness([{ code: 200, data: {} }, { code: 200, data: {} }]);
+    await assert.rejects(lookup.api.dailyCheckIn('42'), /尚未提交签到.*签到活动信息/);
+    assert.equal(lookup.requests.length, 2);
+    const failed = checkInHarness([dailyActivity(), { code: 200, data: [] }], { relogin: new Error('账号或密码错误') });
+    await assert.rejects(failed.api.dailyCheckIn('42'), /登录凭证已失效.*账号或密码错误/);
+    assert.equal(failed.requests.length, 2);
+    const other = checkInHarness([dailyActivity(), { code: 200, data: [] }], { relogin: { user: { uid: '7' } } });
+    await assert.rejects(other.api.dailyCheckIn('42'), /账号与当前账号不一致/);
+    assert.equal(other.requests.length, 2);
 });
 
 test('check-in does not let success or reward text hide explicit failures', async () => {
@@ -495,8 +562,8 @@ test('check-in identifies the failed stage and never retries an ambiguous POST',
     await assert.rejects(after.api.dailyCheckIn('42'), /结果未确认.*超时.*可能已生效/);
     assert.equal(after.requests.length, 2);
     assert.equal(after.api.dailyCheckInPromise, null);
-    const invalid = checkInHarness([{ code: 200, data: {} }]);
-    await assert.rejects(invalid.api.dailyCheckIn('42'), /尚未提交签到.*活动 ID/);
+    const invalid = checkInHarness([{ code: 200, data: { msg: '活动未开始' } }]);
+    await assert.rejects(invalid.api.dailyCheckIn('42'), /尚未提交签到.*活动未开始/);
     assert.equal(invalid.requests.length, 1);
 });
 
