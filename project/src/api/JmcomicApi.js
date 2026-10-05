@@ -192,8 +192,10 @@ class JmcomicApi {
             }
 
             try {
+                // Account calls may re-login across several API lines first, so they run as a
+                // server job: remote access through a proxy never holds one long request.
                 const { response, payload } = authenticated
-                    ? await this.#fetchWithTimeout("./local-api/jm-proxy", {
+                    ? await readResponse(await localRuntime.fetchJob("./local-api/jm-proxy", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         cache: "no-store",
@@ -205,7 +207,7 @@ class JmcomicApi {
                             token: accessToken.token,
                             tokenParam: accessToken.tokenParam,
                         }),
-                    }, 45000, readResponse)
+                    }, 240000))
                     : await this.#fetchWithTimeout(`https://${server}${path}`, options, timeoutMs, readResponse);
                 const result = typeof payload.data === "string"
                     ? crypto.decryptData(key, payload.data)
@@ -394,9 +396,9 @@ class JmcomicApi {
         return profile;
     }
 
-    async ensureAuthenticated() {
+    async ensureAuthenticated({ refresh = false } = {}) {
         await this.init();
-        const response = await localRuntime.ensureAccountSession(this.servers.slice(0, 5));
+        const response = await localRuntime.ensureAccountSession(this.servers.slice(0, 5), { refresh });
         const profile = response?.user;
         if (!profile?.uid) throw new Error("账号会话建立失败");
         const nextUserId = String(profile.uid);
@@ -597,6 +599,9 @@ class JmcomicApi {
             authenticated: true,
         });
         this.#assertDailyCheckInEnvelope(payload);
+        if (this.#isEmptyDailyResult(result) && !this.#dailyMessage(payload)) {
+            throw Object.assign(new Error("未取得签到活动信息，请稍后重试"), { emptyDailyResponse: true });
+        }
         if (!result || typeof result !== "object" || Array.isArray(result)) {
             throw new Error("未取得签到活动信息，请稍后重试");
         }
@@ -621,11 +626,32 @@ class JmcomicApi {
         return error?.message || "未收到有效响应";
     }
 
+    #isEmptyDailyResult(result) {
+        return result == null || result === "" || (typeof result === "object" && Object.keys(result).length === 0);
+    }
+
     async #performDailyCheckIn(uid) {
+        const outcome = await this.#attemptDailyCheckIn(uid);
+        if (outcome) return outcome;
+        // JM answers with code 200 and an empty body (not 401) once the login cookie has
+        // expired or was replaced by a login elsewhere. Log in again and retry once: a
+        // repeated check-in on the same day only reports "already checked in".
+        try {
+            const profile = await this.ensureAuthenticated({ refresh: true });
+            if (String(profile?.uid ?? "") !== uid) throw new Error("重新登录后的账号与当前账号不一致");
+        } catch (error) {
+            throw new Error(`登录凭证已失效（可能已过期或在其他地方登录），重新登录失败，签到未完成：${this.#dailyErrorDetail(error)}`);
+        }
+        return this.#attemptDailyCheckIn(uid, true);
+    }
+
+    /** Returns the check-in outcome, or null when JM answered with an empty body on a first attempt. */
+    async #attemptDailyCheckIn(uid, relogged = false) {
         let daily;
         try {
             daily = await this.getDailyCheckInStatus(uid);
         } catch (error) {
+            if (error?.emptyDailyResponse && !relogged) return null;
             throw new Error(`读取签到活动失败，尚未提交签到：${this.#dailyErrorDetail(error)}`);
         }
         let response;
@@ -654,10 +680,9 @@ class JmcomicApi {
         if (failedStatus || failedCode || failedMessage || this.#dailyMessage(result?.error) || this.#dailyMessage(payload?.error)) {
             throw new Error(`签到接口返回失败：${message || `状态 ${status || result?.code || payload?.code}`}`);
         }
-        const emptyResult = result == null || (typeof result === "object" && Object.keys(result).length === 0);
-        if (emptyResult && !message && !status) {
-            // The server answers code 200 with an empty list when it did not parse the form fields.
-            throw new Error("签到接口返回了空结果，未确认成功：服务器可能没有收到签到参数。请稍后再次签到确认。");
+        if (this.#isEmptyDailyResult(result) && !message && !status) {
+            if (!relogged) return null;
+            throw new Error("签到接口返回了空结果，未确认成功：已重新登录但仍没有签到结果，服务器可能没有收到签到参数。请稍后再次签到确认。");
         }
         // The real success response carries only rewards, e.g. {"msg":"Jcoin:10 EXP:10"}.
         // Failure wording is rejected above, so a reward-only message is a confirmed success.

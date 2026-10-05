@@ -66,6 +66,9 @@ PROXY_PATH_METHODS = {
 }
 # These endpoints ignore url-encoded bodies and silently answer code 200 with an empty list.
 PROXY_MULTIPART_PATHS = {"/daily_chk"}
+# A dead login session makes these answer 200 with a blank body; pass it on as JM's
+# usual empty result so the browser re-logs in instead of reporting invalid JSON.
+PROXY_BLANK_AS_EMPTY_PATHS = {"/daily", "/daily_chk"}
 CACHE_CLEANUP_LOCK = threading.Lock()
 PROXY_DNS_CACHE_TTL = 5 * 60
 PROXY_DNS_CACHE = {}
@@ -269,6 +272,16 @@ class JmSessionManager:
             self.profile = profile
             return self.current()
 
+    def refresh(self, servers: list[str]) -> dict:
+        # JM may answer requests on a dead session (expired, or replaced by a login
+        # elsewhere) with code 200 and an empty body instead of 401, so callers that
+        # detect this ask for a fresh login explicitly.
+        with self.lock:
+            self.server = ""
+            self.session = ""
+            self.profile = None
+            return self.ensure(servers)
+
     def refresh_if_current(self, previous_session: str, servers: list[str]) -> dict:
         with self.lock:
             if self.session and self.session != previous_session and self.profile:
@@ -457,6 +470,80 @@ def get_web_chapter_names(album_id: object) -> dict:
     raise ChapterNameError(str(last_error or "JM 网文章节名称读取失败"))
 
 
+# Slow routes (JM login tries several API lines, account requests may re-login
+# first, AI calls take minutes) can outlast the 60–100 s idle limit of reverse
+# proxies and tunnels, and phones drop long requests when they sleep. A client
+# may send `X-Local-Job: start` to run one of these routes in the background and
+# poll /local-api/jobs?id=… with short requests. The finished job replays exactly
+# what the direct route would have sent, so a check-in answer is not lost with a
+# dropped connection.
+JOB_PATHS = {
+    "/local-api/jm-proxy", "/local-api/auth/login", "/local-api/auth/session", "/local-api/chapter-names",
+    "/local-api/translation", "/local-api/translation/test", "/local-api/organize",
+}
+JOB_TTL = 15 * 60
+# Most jobs finish in a second or two; answering those inline saves a poll round trip
+# while still never holding a connection anywhere near a proxy's idle limit.
+JOB_INLINE_WAIT = 8
+MAX_RUNNING_JOBS = 8
+jobs: dict[str, dict] = {}
+jobs_lock = threading.Lock()
+
+
+def job_dedupe_key(path: str, body: dict | None) -> str:
+    # A retry or a second device asking for the same grouping joins the running job.
+    if path == "/local-api/organize" and body and not body.get("force"):
+        key = str(body.get("cache_key") or "")
+        return f"organize:{key}" if CACHE_KEY.fullmatch(key) else ""
+    return ""
+
+
+def start_job(run, dedupe: str = "") -> str | None:
+    """Run `run() -> (status, payload bytes)` in a thread; None when too many jobs are running."""
+    now = time.time()
+    with jobs_lock:
+        for job_id, job in list(jobs.items()):
+            if now - job.get("finished", now) > JOB_TTL:
+                del jobs[job_id]
+        running = [(job_id, job) for job_id, job in jobs.items() if "finished" not in job]
+        for job_id, job in running:
+            if dedupe and job["dedupe"] == dedupe:
+                return job_id
+        if len(running) >= MAX_RUNNING_JOBS:
+            return None
+        job_id = secrets.token_hex(12)
+        jobs[job_id] = {"dedupe": dedupe, "created": now, "done": threading.Event()}
+
+    def worker() -> None:
+        try:
+            status, payload = run()
+        except Exception as error:  # Never leave a job "running" forever.
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            payload = json.dumps({"error": f"后台任务意外失败: {str(error)[:200]}"}, ensure_ascii=False).encode("utf-8")
+        with jobs_lock:
+            jobs[job_id].update(status=int(status), payload=payload, finished=time.time())
+            jobs[job_id]["done"].set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
+def job_state(job_id: str) -> dict | None:
+    with jobs_lock:
+        job = jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def save_organize_cache(key: str, result: dict, comics: object) -> None:
+    placed = {item["id"] for group in result["groups"] for item in group["items"]}
+    kept = [comic for comic in comics if isinstance(comic, dict) and str(comic.get("id")) in placed] if isinstance(comics, list) else []
+    atomic_json_write(CACHE_DIR / "organize" / f"{key}.json", {
+        "saved_at": time.time(),
+        "data": {"model": result.get("model", ""), "savedAt": int(time.time() * 1000), "groups": result["groups"], "comics": kept},
+    })
+    LocalHandler.record_cache_write()
+
+
 class LocalHandler(SimpleHTTPRequestHandler):
     cache_writes = 0
     cache_write_lock = threading.Lock()
@@ -491,9 +578,40 @@ class LocalHandler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
+    def wants_job(self) -> bool:
+        headers = getattr(self, "headers", None)
+        return urlparse(self.path).path in JOB_PATHS and headers is not None and headers.get("X-Local-Job") == "start"
+
+    def start_background(self, body: dict | None) -> None:
+        recorder = JobRecorder(self.path, body)
+        job_id = start_job(recorder.run, job_dedupe_key(urlparse(self.path).path, body))
+        if job_id is None:
+            self.send_json({"error": "后台任务过多，请稍后再试"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        job = job_state(job_id)
+        if job and job["done"].wait(JOB_INLINE_WAIT):
+            self.send_job_result(job_id)
+        else:
+            self.send_json({"job": job_id}, status=HTTPStatus.ACCEPTED, headers={"X-Local-Job": "accepted"})
+
+    def send_job_result(self, job_id: str) -> None:
+        job = job_state(job_id)
+        if job is None:
+            self.send_json({"error": "后台任务不存在或已过期（服务可能刚重启），请重试"}, status=HTTPStatus.NOT_FOUND, headers={"X-Local-Job": "missing"})
+        elif "finished" not in job:
+            self.send_json({"status": "running"}, status=HTTPStatus.ACCEPTED, headers={"X-Local-Job": "running"})
+        else:
+            self.send_raw_json(job["payload"], status=job["status"], headers={"X-Local-Job": "done"})
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if self.wants_job():
+            self.start_background(None)
+            return
+        if parsed.path == "/local-api/jobs":
+            self.send_job_result(query.get("id", [""])[0])
+            return
         if parsed.path == "/local-api/library/history":
             try:
                 self.send_json(library.library_history(query.get("kind", [""])[0]))
@@ -565,6 +683,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
         body = self.read_json_body()
         if body is None:
             return
+        if self.wants_job():
+            self.start_background(body)
+            return
         if parsed.path == "/local-api/library/history":
             kind = parse_qs(parsed.query).get("kind", [""])[0]
             try:
@@ -603,6 +724,8 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         self.send_json({"error": "账号和密码不能为空"}, status=HTTPStatus.BAD_REQUEST)
                         return
                     state = jm_session.configure(username, password, servers)
+                elif body.get("refresh") is True:
+                    state = jm_session.refresh(servers)
                 else:
                     state = jm_session.ensure(servers)
                 self.send_json({"authenticated": True, "user": state["user"]})
@@ -625,9 +748,21 @@ class LocalHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/local-api/organize":
             try:
-                self.send_json(translator.organize(body.get("items"), body.get("query")))
+                result = translator.organize(body.get("items"), body.get("query"))
             except TranslationError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            # Saved here rather than by the browser so every device sees the grouping,
+            # even when the requesting phone went to sleep before it finished.
+            cached = False
+            cache_key = str(body.get("cache_key") or "")
+            if CACHE_KEY.fullmatch(cache_key):
+                try:
+                    save_organize_cache(cache_key, result, body.get("comics"))
+                    cached = True
+                except OSError:
+                    pass
+            self.send_json({**result, "cached": cached})
             return
         if parsed.path == "/local-api/translation":
             try:
@@ -702,6 +837,8 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         response_body = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
                         if len(response_body) > MAX_PROXY_RESPONSE_BYTES:
                             raise ValueError("响应过大")
+                        if parsed_path.path in PROXY_BLANK_AS_EMPTY_PATHS and not response_body.strip():
+                            response_body = b'{"code":200,"data":[]}'
                         self.send_raw_json(response_body, status=response.status)
                         return
                 except HTTPError as error:
@@ -785,20 +922,47 @@ class LocalHandler(SimpleHTTPRequestHandler):
             return None
         return value
 
-    def send_json(self, value: object, status: int = HTTPStatus.OK) -> None:
+    def send_json(self, value: object, status: int = HTTPStatus.OK, headers: dict | None = None) -> None:
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_raw_json(payload, status)
+        self.send_raw_json(payload, status, headers)
 
-    def send_raw_json(self, payload: bytes, status: int = HTTPStatus.OK) -> None:
+    def send_raw_json(self, payload: bytes, status: int = HTTPStatus.OK, headers: dict | None = None) -> None:
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # Safari may cancel an in-flight request when a view is replaced.
             self.close_connection = True
+
+
+class JobRecorder(LocalHandler):
+    """Runs one LocalHandler route off the request thread and keeps what it would have sent."""
+
+    def __init__(self, path: str, body: dict | None) -> None:  # No socket: skip the base initializer.
+        self.path = path
+        self.body = body
+        self.result = (HTTPStatus.INTERNAL_SERVER_ERROR, '{"error":"后台任务没有返回结果"}'.encode("utf-8"))
+
+    def wants_job(self) -> bool:
+        return False
+
+    def read_json_body(self):
+        return self.body
+
+    def send_raw_json(self, payload: bytes, status: int = HTTPStatus.OK, headers: dict | None = None) -> None:
+        self.result = (int(status), payload)
+
+    def send_error(self, code, message=None, explain=None) -> None:
+        self.send_json({"error": message or "请求失败"}, status=code)
+
+    def run(self) -> tuple[int, bytes]:
+        (self.do_GET if self.body is None else self.do_POST)()
+        return self.result
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run JMComic WebUI locally")
