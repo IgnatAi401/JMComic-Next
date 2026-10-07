@@ -450,6 +450,68 @@ class OrganizeCacheTests(unittest.TestCase):
             handler.send_json.assert_called_once_with({"authenticated": True, "user": {"uid": "42"}})
 
 
+class _LoginResponse(_ProxyResponse):
+    def geturl(self):
+        return "https://api.example.com/login"
+
+
+def _encrypt_jm_data(plaintext: bytes, timestamp: int) -> str:
+    import base64
+    import hashlib
+    import subprocess
+
+    key = hashlib.md5(f"{timestamp}{local_server.JM_DATA_SECRETS[0]}".encode("utf-8")).hexdigest().encode("ascii")
+    result = subprocess.run(
+        ["openssl", "enc", "-aes-256-ecb", "-K", key.hex()],
+        input=plaintext, stdout=subprocess.PIPE, check=True,
+    )
+    return base64.b64encode(result.stdout).decode("ascii")
+
+
+class JmBomCompatibilityTests(unittest.TestCase):
+    BOM = b"\xef\xbb\xbf"
+
+    def test_login_accepts_responses_with_and_without_utf8_bom(self):
+        profile = {"uid": "42", "s": "session", "username": "u"}
+        for prefix in (b"", self.BOM, self.BOM + self.BOM, b"\n" + self.BOM):
+            for encrypted in (False, True):
+                with self.subTest(prefix=prefix, encrypted=encrypted), patch("local_server.time.time", return_value=1700000000):
+                    data = _encrypt_jm_data(prefix + json.dumps(profile).encode(), 1700000000) if encrypted else profile
+                    body = prefix + json.dumps({"code": 200, "data": data}).encode()
+                    with patch("local_server.urlopen", return_value=_LoginResponse(body)):
+                        server, session, raw_profile = local_server.request_jm_login("u", "p", ["api.example.com"])
+                    self.assertEqual((server, session, raw_profile["uid"]), ("api.example.com", "session", "42"))
+
+    def test_proxy_strips_bom_and_leaves_other_bodies_unchanged(self):
+        state = {"server": "api.example.com", "session": "session", "user": {"uid": "42"}}
+        for body, expected in (
+            (self.BOM + b'{"code":200}', b'{"code":200}'),
+            (b'{"code":200}', b'{"code":200}'),
+            (b" \n{}", b" \n{}"),
+        ):
+            handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+            handler.send_json = Mock()
+            handler.send_raw_json = Mock()
+            with (
+                patch.object(local_server.jm_session, "active", return_value=state),
+                patch("local_server.urlopen", return_value=_ProxyResponse(body)),
+            ):
+                handler.proxy_jm_request({"path": "/favorite", "method": "GET", "token": "t", "tokenParam": "1,3.2.0"})
+            handler.send_raw_json.assert_called_once_with(expected, status=HTTPStatus.OK)
+
+    def test_bom_only_checkin_body_becomes_an_empty_result(self):
+        state = {"server": "api.example.com", "session": "session", "user": {"uid": "42"}}
+        handler = local_server.LocalHandler.__new__(local_server.LocalHandler)
+        handler.send_json = Mock()
+        handler.send_raw_json = Mock()
+        with (
+            patch.object(local_server.jm_session, "active", return_value=state),
+            patch("local_server.urlopen", return_value=_ProxyResponse(self.BOM)),
+        ):
+            handler.proxy_jm_request({"path": "/daily_chk", "method": "POST", "data": {}, "token": "t", "tokenParam": "1,3.2.0"})
+        handler.send_raw_json.assert_called_once_with(b'{"code":200,"data":[]}', status=HTTPStatus.OK)
+
+
 class ServerLifecycleTests(unittest.TestCase):
     def test_main_closes_server_during_shutdown(self):
         server = Mock()
