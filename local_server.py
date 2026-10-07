@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import codecs
 import hashlib
 import ipaddress
 import json
@@ -142,12 +143,28 @@ def normalize_proxy_servers(value: object) -> list[str]:
     return servers
 
 
+def strip_json_bom(raw: bytes) -> bytes:
+    # JM has started prefixing JSON with a UTF-8 BOM; json.loads rejects it in a str and
+    # some clients reject it in a body. Strip any (possibly repeated) BOM so responses
+    # parse the same with or without it. Bodies without a BOM pass through unchanged.
+    body = raw.lstrip()
+    if not body.startswith(codecs.BOM_UTF8):
+        return raw
+    while body.startswith(codecs.BOM_UTF8):
+        body = body[len(codecs.BOM_UTF8):].lstrip()
+    return body
+
+
+def load_jm_json(raw: bytes) -> object:
+    return json.loads(strip_json_bom(raw).decode("utf-8"))
+
+
 def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
     openssl = shutil.which("openssl")
     if not openssl:
         raise JmSessionError("本机缺少 OpenSSL，无法建立账号会话")
     try:
-        encrypted = base64.b64decode(ciphertext, validate=True)
+        encrypted = base64.b64decode(ciphertext.strip().lstrip("\ufeff"), validate=True)
     except (ValueError, TypeError) as error:
         raise JmSessionError("登录接口返回了无效数据") from error
     for secret in JM_DATA_SECRETS:
@@ -161,7 +178,7 @@ def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
                 check=True,
                 timeout=6,
             )
-            return json.loads(result.stdout.decode("utf-8"))
+            return load_jm_json(result.stdout)
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
             continue
     raise JmSessionError("登录接口数据解密失败")
@@ -198,7 +215,7 @@ def request_jm_login(username: str, password: str, servers: list[str]) -> tuple[
                 raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_PROXY_RESPONSE_BYTES:
                     raise JmSessionError("登录接口响应过大")
-                envelope = json.loads(raw.decode("utf-8"))
+                envelope = load_jm_json(raw)
                 data = envelope.get("data", envelope) if isinstance(envelope, dict) else envelope
                 profile = decrypt_jm_data(data, timestamp) if isinstance(data, str) else data
                 if not isinstance(profile, dict) or not profile.get("uid") or not profile.get("s"):
@@ -837,6 +854,7 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         response_body = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
                         if len(response_body) > MAX_PROXY_RESPONSE_BYTES:
                             raise ValueError("响应过大")
+                        response_body = strip_json_bom(response_body)
                         if parsed_path.path in PROXY_BLANK_AS_EMPTY_PATHS and not response_body.strip():
                             response_body = b'{"code":200,"data":[]}'
                         self.send_raw_json(response_body, status=response.status)
@@ -848,7 +866,7 @@ class LocalHandler(SimpleHTTPRequestHandler):
                             servers = normalize_proxy_servers(body.get("servers"))
                         state = jm_session.refresh_if_current(state["session"], servers)
                         continue
-                    self.send_raw_json(response_body[:MAX_PROXY_RESPONSE_BYTES], status=error.code)
+                    self.send_raw_json(strip_json_bom(response_body[:MAX_PROXY_RESPONSE_BYTES]), status=error.code)
                     return
         except JmSessionError as error:
             self.send_json({"error": str(error)}, status=HTTPStatus.UNAUTHORIZED)

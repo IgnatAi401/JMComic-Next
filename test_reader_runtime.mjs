@@ -368,6 +368,23 @@ test("JM rejects malformed successful JSON and uses the next server", async () =
     assert.equal(h.timers.callbacks.size, 0);
 });
 
+test("JM JSON bodies parse with or without a leading UTF-8 BOM", async () => {
+    const parseJsonText = loadModule("api/Crypto.js", "parseJsonText");
+    for (const prefix of ["", "\uFEFF", "\uFEFF\uFEFF", "\n\uFEFF"]) {
+        assert.equal(parseJsonText(`${prefix}{"code":200}`).code, 200);
+        const api = loadModule("api/JmcomicApi.js", "jmApi", {
+            ...fakeTimers(), parseJsonText,
+            fetch: async (url) => ({ ok: true, status: 200, url, text: async () => `${prefix}{"data":{"id":"42","name":"Fixture"}}` }),
+            setting: {},
+            localRuntime: { readCache: async () => null, writeCache: async () => {} },
+            readLocalStorage: () => "null", writeLocalStorage() {}, removeLocalStorage() {},
+            crypto: { calculateMD5: () => "fixture-token" },
+        });
+        api.servers = ["first.invalid"];
+        assert.equal((await api.getComicAlbum("42")).name, "Fixture");
+    }
+});
+
 test("bootstrap text bodies retain their timeout and retry after an interrupted download", async () => {
     let attempts = 0;
     const h = apiHarness(async (_, { signal }) => ({

@@ -1,7 +1,7 @@
 import { setting } from "../core/Setting.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
-import { crypto } from "./Crypto.js";
+import { crypto, parseJsonText } from "./Crypto.js";
 import { listingApiOrder, listingCategoryPath, normalizeListingFilters } from "../utils/ListingFilters.js";
 
 // Check-in rewards appear as "Jcoin:10 EXP:10" or "[EXP:10] [COIN:2]".
@@ -164,7 +164,9 @@ class JmcomicApi {
         const readResponse = async (response) => {
             let payload;
             try {
-                payload = await response.json();
+                payload = typeof response.text === "function"
+                    ? parseJsonText(await response.text())
+                    : await response.json();
             } catch (error) {
                 if (error?.name === "AbortError") throw error;
                 if (response.ok) throw new Error("当前 API 线路返回了无效数据");
