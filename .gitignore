@@ -34,11 +34,5 @@ Thumbs.db
 .codex/
 .agents/
 
-# Frontend dependencies and test output
-node_modules/
-coverage/
-playwright-report/
-test-results/
-
 # Local agent instructions
 AGENTS.md

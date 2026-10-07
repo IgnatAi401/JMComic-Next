@@ -40,15 +40,6 @@ uv run --locked python local_server.py
 - 缓存会自动限制大小并清理，可随时删除 `project/.runtime-cache/`。
 - 迁移电脑时，停止服务后复制整个 `project/data/` 即可。
 
-## 开发测试
-
-```bash
-uv run --locked python -m unittest discover -q
-node --experimental-vm-modules --test test_reader_runtime.mjs test_library_runtime.mjs tests/frontend_ui.test.mjs
-```
-
-Node.js 需 22+。界面调试可启动虚构数据服务 `uv run --locked python tests/serve_ui_fixture.py`，访问 `http://127.0.0.1:48128/`，它不读取真实数据、不访问外部接口。
-
 ## 致谢
 
 本项目基于 [hect0x7/JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) 的接口方案开发，感谢上游项目及其贡献者。
