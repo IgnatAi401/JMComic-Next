@@ -1,8 +1,9 @@
 import { jmApi } from "../api/JmcomicApi.js";
+import { authSession } from "../auth/AuthSession.js";
 import { libraryStore } from "../data/LibraryStore.js";
 import { comicCardHtml } from "../ui/comic-card.js";
 import { coverHtml, hydrateCovers } from "../ui/covers.js";
-import { asText, authorsOf, detailUrl, escapeHtml, formatDateTime, searchUrl, textList } from "../ui/dom.js";
+import { asText, authorsOf, detailUrl, escapeHtml, formatDate, formatDateTime, searchUrl, textList } from "../ui/dom.js";
 import { icon } from "../ui/icons.js";
 import { hydrateRichCards } from "../ui/rich-cards.js";
 import { loadPreferences, preferenceAuthorsHtml, preferenceLegendHtml, preferenceTagsHtml } from "../ui/preferences.js";
@@ -230,12 +231,14 @@ class RandomPick {
     }
 }
 
-const sideAuthorHtml = (item) => {
+const sideAuthorHtml = (item, fallback = "未知作者") => {
     const author = authorsOf(item)[0];
-    return author ? `<a class="author-name" href="${searchUrl(author)}">${escapeHtml(author)}</a>` : "未知作者";
+    return author ? `<a class="author-name" href="${searchUrl(author)}">${escapeHtml(author)}</a>` : fallback;
 };
 
-function renderSideList(section, items, { removable = false } = {}) {
+const savedMeta = (item) => (item.savedAt ? formatDateTime(item.savedAt) : "");
+
+function renderSideList(section, items, { removable = false, meta = savedMeta, highlight = () => false, unknownAuthor = "未知作者" } = {}) {
     section.hidden = !items.length;
     const side = section.closest(".home-side");
     side.removeAttribute("data-pending");
@@ -244,11 +247,11 @@ function renderSideList(section, items, { removable = false } = {}) {
     section.querySelector(".continue-list").innerHTML = items.map((item) => {
         const title = asText(item.name ?? item.title, "未命名作品");
         const href = detailUrl(item.id);
-        return `<li class="continue-item${removable ? " later-item" : ""}">
+        return `<li class="continue-item${removable ? " later-item" : ""}${highlight(item) ? " is-highlight" : ""}">
             ${coverHtml(item, { href })}
             <div class="continue-copy">
                 <a class="continue-title" href="${href}">${escapeHtml(title)}</a>
-                <span class="continue-meta">${sideAuthorHtml(item)}${item.savedAt ? ` · ${escapeHtml(formatDateTime(item.savedAt))}` : ""}</span>
+                <span class="continue-meta">${[sideAuthorHtml(item, unknownAuthor), escapeHtml(meta(item))].filter(Boolean).join(" · ")}</span>
             </div>
             ${removable ? `<button class="later-remove" type="button" data-later-remove="${escapeHtml(item.id)}" aria-label="从稍后再看移除《${escapeHtml(title)}》" title="移除">${icon("close")}</button>` : ""}
         </li>`;
@@ -258,6 +261,64 @@ function renderSideList(section, items, { removable = false } = {}) {
 
 function renderContinueReading() {
     renderSideList(document.querySelector(".continue.reading"), libraryStore.getHistory().slice(0, 8));
+}
+
+// Account-side tracked series (first page of /album_tracking), newest update first.
+let trackingItems = [];
+let trackingAccount = null;
+let trackingVersion = 0;
+
+const trackingUpdatedAt = (item) => Number(item?.update_at ?? item?.updateAt) || 0;
+
+/** Updated after the user last read it here (only known for works in local history). */
+const trackingHasUpdate = (item) => {
+    const read = libraryStore.getHistory().find((entry) => String(entry.id) === String(item.id));
+    return Boolean(read?.savedAt && trackingUpdatedAt(item) * 1000 > Number(read.savedAt));
+};
+
+function renderTracking() {
+    renderSideList(document.querySelector(".continue.tracking"), trackingItems.slice(0, 8), {
+        meta: (item) => {
+            const updated = formatDate(trackingUpdatedAt(item), { year: "numeric", month: "2-digit", day: "2-digit" });
+            return `${trackingHasUpdate(item) ? "有更新 · " : ""}更新于 ${updated || "未知"}`;
+        },
+        highlight: trackingHasUpdate,
+        // The tracking API usually carries no author; show just the update date then.
+        unknownAuthor: "",
+    });
+}
+
+async function loadTracking() {
+    const version = ++trackingVersion;
+    try {
+        await authSession.loadLocalConfig();
+        if (!authSession.isConfigured) {
+            trackingAccount = "";
+            trackingItems = [];
+            return;
+        }
+        await authSession.loginFromLocalConfig();
+        const raw = await jmApi.getAlbumTrackingList(1);
+        if (version !== trackingVersion) return;
+        trackingAccount = String(authSession.user?.uid || authSession.configuredUsername || "");
+        const list = raw?.item ?? raw?.list;
+        trackingItems = (Array.isArray(list) ? list : [])
+            .filter((item) => item?.id)
+            .sort((a, b) => trackingUpdatedAt(b) - trackingUpdatedAt(a));
+    } catch {
+        // The home page stays usable without the account; the full list lives on 消息与追更.
+        if (version === trackingVersion) trackingItems = [];
+    } finally {
+        if (version === trackingVersion) renderTracking();
+    }
+}
+
+function bindTracking() {
+    window.addEventListener("jm-auth-change", () => {
+        if (trackingAccount === null) return;
+        const key = authSession.isConfigured ? String(authSession.user?.uid || authSession.configuredUsername || "") : "";
+        if (key !== trackingAccount) loadTracking();
+    });
 }
 
 function renderWatchLater() {
@@ -279,6 +340,7 @@ function bindWatchLater() {
     });
     window.addEventListener("jm-library-change", () => {
         renderWatchLater();
+        renderTracking();
         renderContinueReading();
     });
 }
@@ -331,6 +393,8 @@ class HomePage {
         document.querySelector("[data-today]").textContent = new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
         await jmApi.init();
         bindWatchLater();
+        bindTracking();
+        loadTracking();
         const random = new RandomPick(document.querySelector(".random"));
         // The random pick and the shelves are independent; load them side by side.
         await Promise.all([
