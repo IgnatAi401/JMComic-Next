@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "jmcomic", "runtimeExecutable": "uv", "runtimeArgs": ["run", "--locked", "python", "local_server.py"], "port": 8000 }
+  ]
+}
