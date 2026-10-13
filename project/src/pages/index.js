@@ -172,6 +172,7 @@ class RandomPick {
         image.alt = `${title}封面`;
         image.decoding = "async";
         cover.classList.remove("is-ready", "is-error");
+        cover.classList.add("is-loading");
         backdrop.classList.remove("is-loaded");
         let index = 0;
         image.onload = () => {
