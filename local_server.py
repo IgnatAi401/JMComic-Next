@@ -38,7 +38,7 @@ ACCOUNT_FILE = DATA_DIR / "account.json"
 library = LocalLibrary(DATA_DIR)
 translator = TitleTranslator(DATA_DIR / "translation.json")
 
-CACHE_KINDS = {"album", "chapter", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications", "organize"}
+CACHE_KINDS = {"album", "chapter", "comments", "categories", "promotion", "favorites", "account_album", "account_like", "bootstrap", "notifications", "organize"}
 CACHE_KEY = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 DEFAULT_MAX_AGE = 7 * 24 * 60 * 60
 MAX_CACHE_AGE = 7 * 24 * 60 * 60
