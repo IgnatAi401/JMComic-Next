@@ -222,13 +222,14 @@ body[data-page="history-migration"] { --nav-w: 0px; --tabbar-h: 0px; }
     .rating-filters button { display: flex; justify-content: space-between; }
 }
 @media (max-width: 999px) {
-    .messages-tabs { margin-bottom: 16px; }
+    /* Two equal halves, whatever the label and count lengths. */
+    .segmented.messages-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 16px; }
     .messages-tabs .tab-count { margin-left: 6px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
     .messages-layout .section-head { display: none; }
     .messages-layout[data-tab="notifications"] > .tracking-section, .messages-layout[data-tab="tracking"] > .notification-section { display: none; }
 }
 @media (min-width: 1000px) {
-    .messages-tabs { display: none; }
+    .segmented.messages-tabs { display: none; }
     .messages-layout { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); align-items: start; gap: 48px; }
 }
 @media (min-width: 1100px) {
