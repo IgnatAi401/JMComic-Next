@@ -165,7 +165,8 @@ class LibraryPage {
             const ratings = await localRuntime.getRatings();
             if (version !== this.ratingsRequestVersion || this.view !== "ratings") return;
             this.localRatings = ratings;
-            this.notice.textContent = `本地保存了 ${ratings.length} 本评分。`;
+            this.notice.textContent = "";
+            document.querySelector(".sync-state").textContent = `本地评分 · ${ratings.length}`;
             this.render();
         } catch (error) {
             if (version === this.ratingsRequestVersion && this.view === "ratings") {
@@ -198,8 +199,7 @@ class LibraryPage {
             this.renderFolders(data?.folder_list || []);
             if (this.view === "favorites") {
                 document.querySelector(".sync-state").textContent = `账号收藏 · ${this.remoteTotal}`;
-                this.notice.textContent = list.length ? "账号收藏已同步。" : "这个收藏夹暂时没有内容。";
-                this.notice.classList.add("success");
+                this.notice.textContent = "";
                 this.loadMoreButton.hidden = !list.length || this.remoteItems.length >= this.remoteTotal;
                 this.render();
             }
@@ -235,7 +235,7 @@ class LibraryPage {
     renderFolders(folders) {
         const normalized = [{ FID: "0", name: "全部收藏" }, ...folders.filter((folder) => String(folder.FID) !== "0")];
         this.folderTabs.innerHTML = normalized.map((folder) => `
-            <button class="${String(folder.FID) === String(this.folderId) ? "active" : ""}" data-id="${escapeHtml(folder.FID)}" type="button">${escapeHtml(folder.name)}</button>
+            <button class="chip" aria-pressed="${String(folder.FID) === String(this.folderId)}" data-id=""${escapeHtml(folder.FID)}" type="button">${escapeHtml(folder.name)}</button>
         `).join("");
         this.folderTabs.querySelectorAll("button").forEach((button) => {
             button.addEventListener("click", () => {
@@ -257,7 +257,7 @@ class LibraryPage {
             }),
         ];
         this.ratingFilters.innerHTML = options.map(({ value, label, count }) =>
-            `<button type="button" data-rating="${value}" class="${this.ratingFilter === value ? "active" : ""}" aria-pressed="${this.ratingFilter === value}">${label}<span>${count}</span></button>`
+            `<button type="button" data-rating="${value}" class="chip" aria-pressed="${this.ratingFilter === value}">${label}<span>${count}</span></button>`
         ).join("");
     }
 

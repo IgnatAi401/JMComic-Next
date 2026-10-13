@@ -19,12 +19,11 @@ const choices = (entries, active) => entries.map(([value, label]) => `<button cl
  * Inline on iPad and desktop; on iPhone the same node moves into a bottom sheet.
  */
 export class ListingFilterPanel {
-    constructor({ panel, toggle, reset, onChange }) {
+    constructor({ panel, toggle, onChange }) {
         this.panel = panel;
         this.home = panel.parentElement;
         this.anchor = panel.nextSibling;
         this.toggle = toggle;
-        this.resetButton = reset;
         this.onChange = onChange;
         this.filters = { ...DEFAULT_LISTING_FILTERS };
         this.categories = [];
@@ -36,9 +35,11 @@ export class ListingFilterPanel {
             <div class="filter-group" data-filter="time"><h3 class="filter-label">时间</h3><div class="chip-row">${choices(Object.entries(TIME_LABELS).map(([key, label]) => [key, key === "a" ? "全部" : label]), this.filters.time)}</div></div>
             <div class="filter-group" data-filter="category"><h3 class="filter-label">主分类</h3><div class="chip-row" data-category-options>${choices([["0", "全部"]], "0")}</div></div>
             <div class="filter-group" data-filter="mainTag" hidden><h3 class="filter-label">副分类</h3><div class="chip-row" data-subcategory-options></div></div>
-            <div class="filter-group">
+            <div class="filter-group filter-group-extra"><h3 class="filter-label">章节</h3><div class="filter-extra">
                 <label class="switch"><input type="checkbox" data-hide-serial /><span class="switch-copy"><strong>只看单章</strong></span></label>
-            </div>`;
+                <button class="btn btn-ghost btn-sm filter-reset" type="button" data-filter-reset disabled>重置筛选</button>
+            </div></div>`;
+        this.resetButton = this.panel.querySelector("[data-filter-reset]");
         this.panel.addEventListener("click", (event) => {
             const button = event.target.closest(".chip[data-value]");
             if (!button || button.disabled || button.getAttribute("aria-pressed") === "true") return;
@@ -48,10 +49,10 @@ export class ListingFilterPanel {
             this.filters.hideSerial = event.currentTarget.checked;
             this.emit();
         });
-        this.resetButton?.addEventListener("click", () => this.reset());
+        this.resetButton.addEventListener("click", () => this.reset());
         this.sheet = new Sheet({ name: "filters", title: "筛选" });
         this.toggle?.addEventListener("click", () => this.sheet.open({ opener: this.toggle }));
-        this.sheet.body.insertAdjacentHTML("beforeend", '<div class="filter-sheet-actions"><button class="btn btn-ghost" type="button" data-sheet-reset>重置</button><button class="btn btn-primary" type="button" data-sheet-done>查看结果</button></div>');
+        this.sheet.body.insertAdjacentHTML("beforeend", '<div class="filter-sheet-actions"><button class="btn btn-outline" type="button" data-sheet-reset>重置</button><button class="btn btn-primary" type="button" data-sheet-done>查看结果</button></div>');
         this.sheet.body.querySelector("[data-sheet-reset]").addEventListener("click", () => this.reset());
         this.sheet.body.querySelector("[data-sheet-done]").addEventListener("click", () => this.sheet.close());
         const place = () => {
@@ -130,7 +131,7 @@ export class ListingFilterPanel {
             badge.textContent = String(changed);
             badge.hidden = !changed;
         }
-        if (this.resetButton) this.resetButton.disabled = !changed;
+        this.resetButton.disabled = !changed;
     }
 
     emit() {

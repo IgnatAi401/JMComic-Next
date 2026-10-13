@@ -11,7 +11,8 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => 
 const plainText = (value) => {
     const template = document.createElement("template");
     template.innerHTML = String(value ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/div\s*>/gi, "\n");
-    return (template.content.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+    // Notices arrive as <br>/<div> soup; keep one line per sentence, without the blank spacers.
+    return (template.content.textContent || "").split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
 };
 
 const asList = (value) => Array.isArray(value) ? value : [];
@@ -45,10 +46,24 @@ export class MessagesPage {
 
     bindEvents() {
         document.querySelector(".refresh-messages").addEventListener("click", () => this.loadAll());
+        // Phones show one list at a time; wide screens show both columns and ignore the switch.
+        const layout = document.querySelector(".messages-layout");
+        document.querySelectorAll("[data-messages-tab]").forEach((tab) => tab.addEventListener("click", () => {
+            layout.dataset.tab = tab.dataset.messagesTab;
+            document.querySelectorAll("[data-messages-tab]").forEach((other) => other.setAttribute("aria-pressed", String(other === tab)));
+            if (tab.dataset.messagesTab === "notifications") this.markClamped();
+        }));
         this.moreButton.addEventListener("click", () => this.loadMoreTracking());
         this.notificationList.addEventListener("click", async (event) => {
-            const item = event.target.closest(".notification-item.unread");
-            if (!item?.dataset.id || item.dataset.saving === "true") return;
+            if (event.target.closest("a")) return;
+            const item = event.target.closest(".notification-item");
+            if (!item) return;
+            if (item.classList.contains("is-clamped")) {
+                const expanded = item.classList.toggle("is-expanded");
+                item.setAttribute("aria-expanded", String(expanded));
+                item.querySelector(".notification-more").textContent = expanded ? "收起" : "展开全文";
+            }
+            if (!item.classList.contains("unread") || !item.dataset.id || item.dataset.saving === "true") return;
             item.dataset.saving = "true";
             try {
                 await jmApi.markNotification(item.dataset.id, true);
@@ -158,8 +173,8 @@ export class MessagesPage {
         this.trackingPage = 1;
         this.trackingItems = [];
         this.trackingTotal = 0;
-        document.querySelector(".notification-total").textContent = "0";
-        document.querySelector(".tracking-total").textContent = "0";
+        document.querySelectorAll(".notification-total").forEach((el) => { el.textContent = "0"; });
+        document.querySelectorAll(".tracking-total").forEach((el) => { el.textContent = "0"; });
     }
 
     async loadNotifications(version = this.requestVersion) {
@@ -167,16 +182,31 @@ export class MessagesPage {
         if (version !== this.requestVersion) return;
         this.notificationsLoaded = true;
         const list = Array.isArray(raw) ? raw : asList(raw?.list);
-        document.querySelector(".notification-total").textContent = String(Number(raw?.total) || list.length);
+        document.querySelectorAll(".notification-total").forEach((el) => { el.textContent = String(Number(raw?.total) || list.length); });
         this.notificationList.innerHTML = list.length
             ? list.map((item) => this.notificationHtml(item)).join("")
             : '<div class="message-empty"><p>目前没有账号通知。</p></div>';
+        this.markClamped();
+    }
+
+    /** Long notices fold to a few lines; only those that actually overflow get the expand affordance. */
+    markClamped() {
+        this.notificationList.querySelectorAll(".notification-item").forEach((item) => {
+            const body = item.querySelector(".notification-copy p");
+            if (!body.clientHeight || item.classList.contains("is-expanded")) return;
+            const clamped = body.scrollHeight > body.clientHeight + 1;
+            item.classList.toggle("is-clamped", clamped);
+            if (clamped) item.setAttribute("aria-expanded", "false");
+            else item.removeAttribute("aria-expanded");
+        });
     }
 
     notificationHtml(item) {
         const unread = !isRead(item?.read);
         const content = this.notificationContent(item?.content);
-        return `<article class="notification-item${unread ? " unread" : ""}" data-id="${escapeHtml(item?.id)}" role="button" tabindex="0"><i></i><span class="notification-copy"><strong>${escapeHtml(item?.title || "账号通知")}</strong><p>${content || "暂无详细内容"}</p></span><time>${escapeHtml(item?.date || item?.time || "")}</time></article>`;
+        const isUpdateList = Array.isArray(item?.content) || /^\s*\[/.test(String(item?.content ?? ""));
+        const title = item?.title || (isUpdateList ? "追更作品更新" : "账号通知");
+        return `<article class="notification-item${unread ? " unread" : ""}" data-id="${escapeHtml(item?.id)}" role="button" tabindex="0"><i></i><span class="notification-copy"><span class="notification-head"><strong>${escapeHtml(title)}</strong><time>${escapeHtml(item?.date || item?.time || "")}</time></span><p>${content || "暂无详细内容"}</p><span class="notification-more" aria-hidden="true">展开全文</span></span></article>`;
     }
 
     notificationContent(value) {
@@ -185,14 +215,14 @@ export class MessagesPage {
             try { parsed = JSON.parse(value); } catch { parsed = value; }
         }
         if (Array.isArray(parsed)) {
+            // Serial-update notices: one linked comic per line.
             return parsed.map((entry) => {
                 if (!entry || typeof entry !== "object") return escapeHtml(plainText(entry));
-                const id = entry.aid || entry.album_id || entry.id;
-                const label = entry.name || entry.title || entry.content || `漫画 ${id || "更新"}`;
-                return id
-                    ? `<a href="./chapter.html?id=${encodeURIComponent(id)}">${escapeHtml(plainText(label))}</a>`
-                    : escapeHtml(plainText(label));
-            }).filter(Boolean).join(" · ");
+                const id = entry.comicId || entry.aid || entry.album_id || entry.id;
+                const label = entry.comicTitle || entry.name || entry.title || entry.content || `漫画 ${id || "更新"}`;
+                const text = escapeHtml(plainText(label));
+                return `<span class="notice-line">${id ? `<a href="./chapter.html?id=${encodeURIComponent(id)}">${text}</a>` : text}</span>`;
+            }).filter(Boolean).join("");
         }
         if (parsed && typeof parsed === "object") return escapeHtml(plainText(parsed.content || parsed.name || parsed.title || JSON.stringify(parsed)));
         return escapeHtml(plainText(parsed));
@@ -211,7 +241,7 @@ export class MessagesPage {
             this.trackingPage = page;
             this.trackingTotal = Math.max(Number(raw?.totalCnt ?? raw?.total) || 0, list.length);
             this.trackingItems = append ? [...this.trackingItems, ...list] : list;
-            document.querySelector(".tracking-total").textContent = String(this.trackingTotal);
+            document.querySelectorAll(".tracking-total").forEach((el) => { el.textContent = String(this.trackingTotal); });
             this.trackingList.innerHTML = this.trackingItems.length
                 ? this.trackingItems.map((item) => this.trackingHtml(item)).join("")
                 : '<div class="message-empty"><p>还没有追踪连载。可在多章节漫画详情页开启追踪。</p></div>';
