@@ -7,6 +7,7 @@ import argparse
 import base64
 import codecs
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -51,6 +52,11 @@ JM_WEB_ORIGIN_TTL = 60 * 60
 PROXY_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?$", re.IGNORECASE)
 PROXY_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
 PRIVATE_STATIC_ROOTS = {"data", ".runtime-cache"}
+# Scripts and styles are linked through /_v/<version>/ so every change gets a new URL and
+# no browser or Cloudflare cache can keep serving stale modules; relative imports inherit the prefix.
+VERSIONED_ROOTS = ("src", "style")
+VERSIONED_PATH = re.compile(r"^/_v/[0-9a-f]{12}/((?:src|style)/.*)$")
+VERSIONED_LINK = re.compile(r'(\b(?:src|href)=")\./((?:src|style)/)')
 JM_TOKEN_SECRET = "185Hcomic3PAPP7R"
 JM_DATA_SECRETS = ("185Hcomic3PAPP7R", "18comicAPPContent")
 JM_APP_VERSION = "3.2.0"
@@ -561,6 +567,16 @@ def save_organize_cache(key: str, result: dict, comics: object) -> None:
     LocalHandler.record_cache_write()
 
 
+def asset_version() -> str:
+    digest = hashlib.sha256()
+    for name in VERSIONED_ROOTS:
+        for path in sorted((PROJECT_DIR / name).rglob("*")):
+            if path.is_file():
+                stat = path.stat()
+                digest.update(f"{path.relative_to(PROJECT_DIR)}:{stat.st_mtime_ns}:{stat.st_size}\n".encode())
+    return digest.hexdigest()[:12]
+
+
 class LocalHandler(SimpleHTTPRequestHandler):
     cache_writes = 0
     cache_write_lock = threading.Lock()
@@ -585,12 +601,41 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parts and parts[0].casefold() in PRIVATE_STATIC_ROOTS:
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
+        if target.is_dir():
+            target = target / "index.html"
+        if target.suffix == ".html" and target.is_file() and not urlparse(self.path).path.startswith("/_v/"):
+            return self.send_versioned_html(target)
         return super().send_head()
 
+    def send_versioned_html(self, target: Path):
+        path = urlparse(self.path).path
+        if not path.endswith(("/", ".html")):
+            # Directory without a trailing slash: let the base class redirect so relative links resolve.
+            return super().send_head()
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+        body = VERSIONED_LINK.sub(rf"\1./_v/{asset_version()}/\2", text).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return io.BytesIO(body)
+
+    def translate_path(self, path: str) -> str:
+        parsed = urlparse(path).path
+        match = VERSIONED_PATH.match(parsed)
+        return super().translate_path("/" + match.group(1) if match else path)
+
     def end_headers(self) -> None:
-        if self.path.startswith("/local-api/"):
+        path = urlparse(self.path).path
+        if path.startswith("/local-api/"):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+        elif VERSIONED_PATH.match(path):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         else:
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
