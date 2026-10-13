@@ -7,7 +7,9 @@
 .listing-results { min-width: 0; }
 .listing-results > .comic-grid > .state { grid-column: 1 / -1; }
 .filter-panel { min-width: 0; }
-.organized-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 20px; }
+/* Summary on the left; “重新整理” pinned right, so on phones it sits straight below the toolbar's “原始列表”. */
+.organized-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; margin-bottom: 20px; }
+.organized-head [data-reorganize] { grid-column: 2; }
 .organized-summary { color: var(--text-2); font-size: 13px; }
 .organized-hint { margin: -6px 0 14px; color: var(--text-3); font-size: 13px; }
 .organized-group { margin-top: 32px; }
