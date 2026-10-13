@@ -3,7 +3,7 @@ import { authSession } from "../auth/AuthSession.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { translateTitleToSimplifiedChinese } from "../api/GoogleTranslateApi.js";
 import { hasMissingComicChapterNames } from "../utils/ComicChapterNames.js";
-import { readLocalStorage } from "../utils/BrowserStorage.js";
+import { libraryStore } from "../data/LibraryStore.js";
 import { mountShell, openAccount } from "../ui/shell.js";
 import { asText, authorsOf, escapeHtml, formatCount, formatDate, isApiTrue, readerUrl, searchUrl, textList } from "../ui/dom.js";
 import { coverHtml, hydrateCovers } from "../ui/covers.js";
@@ -42,6 +42,7 @@ class ChapterPage {
         this.bind();
         this.syncTagFold();
         this.renderChapters();
+        libraryStore.init().then(() => this.renderChapters()).catch(() => {});
         loadPreferences().then((preferences) => { this.preferences = preferences; this.renderPreferences(); });
         const first = this.chapters[0];
         new PagePreview(this.root.querySelector(".detail-preview"), album, { id: first.id, label: this.chapters.length > 1 ? "第 1 章" : "全篇" }).mount();
@@ -164,7 +165,7 @@ class ChapterPage {
     }
 
     renderChapters() {
-        const last = readLocalStorage(`jm_last_chapter_${this.album.id}`);
+        const last = libraryStore.lastChapter(this.album.id);
         const selected = this.chapters.find((item) => String(item.id) === last) || this.chapters[0];
         this.root.querySelector(".chapter-list").innerHTML = this.chapters.map((item, index) => `<a href="${readerUrl(item.id, this.album.id)}" class="chapter-item"${String(item.id) === last ? ' aria-current="true"' : ""}><span class="mono">${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(item.name)}</strong>${icon("chevronRight")}</a>`).join("");
         const start = this.root.querySelector("[data-start-read]");

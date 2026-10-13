@@ -13,11 +13,12 @@ function readList(key) {
     }
 }
 
-function normalizeAlbum(album) {
+function normalizeAlbum(album, chapterId) {
     return {
         id: String(album.id),
         name: album.name || "未命名作品",
         author: Array.isArray(album.author) ? album.author.join(" & ") : (album.author || "未知作者"),
+        ...(chapterId ? { chapterId: String(chapterId) } : {}),
         savedAt: Date.now(),
     };
 }
@@ -77,6 +78,11 @@ class LibraryStore {
     getHistory() { return this.lists.reading; }
     getRandomHistory() { return this.lists.random; }
     getWatchLater() { return this.lists.later; }
+    /** Last chapter read, from server history; falls back to the per-browser value saved by older versions. */
+    lastChapter(id) {
+        const entry = this.lists.reading.find((item) => String(item.id) === String(id));
+        return entry?.chapterId || readLocalStorage(`jm_last_chapter_${id}`);
+    }
     isWatchLater(id) { return this.lists.later.some((item) => String(item.id) === String(id)); }
 
     /** `clear` empties the list; a string `clear` removes only that comic id. */
@@ -93,7 +99,7 @@ class LibraryStore {
         return operation;
     }
 
-    recordHistory(album) { return this.#mutate("reading", [normalizeAlbum(album)]); }
+    recordHistory(album, chapterId) { return this.#mutate("reading", [normalizeAlbum(album, chapterId)]); }
     recordRandomHistory(album) { return this.#mutate("random", [normalizeRandomAlbum(album)]); }
     clearHistory() { return this.#mutate("reading", [], true); }
     clearRandomHistory() { return this.#mutate("random", [], true); }

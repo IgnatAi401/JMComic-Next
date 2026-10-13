@@ -1,7 +1,6 @@
 import { jmApi } from "../api/JmcomicApi.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { libraryStore } from "../data/LibraryStore.js";
-import { writeLocalStorage } from "../utils/BrowserStorage.js";
 import { hasMissingComicChapterNames } from "../utils/ComicChapterNames.js";
 import { mountShell, appShell } from "../ui/shell.js";
 import { chaptersOf } from "../ui/chapters.js";
@@ -38,8 +37,7 @@ export class ReaderPage {
         new Comments(document.querySelector(".reader-comments"), this.chapterId, { title: "本话评论" }).mount({ lazy: true });
         document.querySelector(".reader-afterword").hidden = false;
         this.bindLaterRemove();
-        libraryStore.recordHistory(this.album).catch((error) => showToast(`历史保存失败：${error.message}`, "warning"));
-        writeLocalStorage(`jm_last_chapter_${this.album.id}`, String(this.chapterId));
+        libraryStore.recordHistory(this.album, this.chapterId).catch((error) => showToast(`历史保存失败：${error.message}`, "warning"));
     }
 
     bind() {
