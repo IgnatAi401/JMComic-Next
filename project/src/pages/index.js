@@ -238,6 +238,7 @@ const sideAuthorHtml = (item) => {
 function renderSideList(section, items, { removable = false } = {}) {
     section.hidden = !items.length;
     const side = section.closest(".home-side");
+    side.removeAttribute("data-pending");
     side.hidden = [...side.querySelectorAll(".continue")].every((node) => node.hidden);
     if (!items.length) return;
     section.querySelector(".continue-list").innerHTML = items.map((item) => {

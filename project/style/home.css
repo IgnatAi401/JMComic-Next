@@ -31,12 +31,14 @@
     .home-side::-webkit-scrollbar { display: none; }
     .home-side > .continue + .continue { margin-top: 28px; }
     .home-side > [hidden] + .continue { margin-top: 0; }
-    /* Nothing saved yet: drop the empty sidebar column instead of leaving a gap. */
-    .home-layout:not(:has(.home-side > .continue:not([hidden]))) {
+    /* Nothing saved yet: drop the empty sidebar column instead of leaving a gap.
+       While the library loads ([data-pending]) the column stays reserved, so the
+       usual case — saved items — doesn't squeeze the main column in afterwards. */
+    .home-layout:not(:has(.home-side > .continue:not([hidden]), .home-side[data-pending])) {
         grid-template-columns: minmax(0, 1fr);
         grid-template-areas: "random" "tags" "shelves";
     }
-    .home-layout:not(:has(.home-side > .continue:not([hidden]))) .home-side { display: none; }
+    .home-layout:not(:has(.home-side > .continue:not([hidden]), .home-side[data-pending])) .home-side { display: none; }
 }
 
 /* ---- Random pick ---- */
