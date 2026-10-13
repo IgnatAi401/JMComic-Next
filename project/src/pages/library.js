@@ -136,8 +136,7 @@ class LibraryPage {
         };
         document.querySelector(".sync-state").textContent = labels[view];
         this.notice.className = "library-notice";
-        this.notice.textContent = view === "random" ? "这里保留在发现页验证通过的随机作品。"
-            : view === "later" ? "点卡片右上角的时钟按钮即可加入或移出稍后再看。" : "";
+        this.notice.textContent = "";
         if (updateUrl) {
             const url = new URL(window.location.href);
             url.searchParams.set("view", view);
@@ -274,7 +273,7 @@ class LibraryPage {
         document.querySelector(".sync-state").textContent = `${names[this.view]} · ${items.length}`;
         if (!items.length) {
             const needsAccount = this.view === "favorites" && !authSession.isConfigured;
-            this.grid.innerHTML = stateHtml({ title: needsAccount ? "连接你的收藏" : "这里暂时没有作品", message: needsAccount ? "配置账号后，同步收藏到书架。" : "开始阅读、给作品评分，或换一个筛选条件。", action: needsAccount ? { label: "配置账号", attrs: 'data-open-account' } : { label: "去发现", href: "./index.html" } });
+            this.grid.innerHTML = stateHtml({ title: needsAccount ? "连接你的收藏" : "这里暂时没有作品", message: needsAccount ? "配置账号后，同步收藏到书架。" : "", action: needsAccount ? { label: "配置账号", attrs: 'data-open-account' } : { label: "去发现", href: "./index.html" } });
             return;
         }
         this.grid.innerHTML = items.map((item) => comicCardHtml(item, {

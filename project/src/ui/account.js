@@ -6,11 +6,11 @@ import { showToast } from "./toast.js";
 
 const block = (collapsible, { key, title, note, body, open = false }) => collapsible
     ? `<details class="disclosure account-block" data-block="${key}"${open ? " open" : ""}>
-            <summary><span>${title}</span><small>${note}</small>${icon("chevronDown", "chevron")}</summary>
+            <summary><span>${title}</span>${note ? `<small>${note}</small>` : ""}${icon("chevronDown", "chevron")}</summary>
             <div class="account-block-body">${body}</div>
         </details>`
     : `<section class="panel account-block" data-block="${key}" id="${key}">
-            <div class="panel-head"><div><h2 class="panel-title">${title}</h2><p class="panel-sub">${note}</p></div></div>
+            <div class="panel-head"><div><h2 class="panel-title">${title}</h2>${note ? `<p class="panel-sub">${note}</p>` : ""}</div></div>
             ${body}
         </section>`;
 
@@ -29,7 +29,7 @@ export class AccountPanel {
         const accountBody = `
             <div class="account-identity">
                 <span class="avatar" data-account-avatar>${icon("user")}</span>
-                <div><strong data-account-name>未配置账号</strong><small data-account-state>配置后自动登录，并同步收藏、消息与追更。</small></div>
+                <div><strong data-account-name>未配置账号</strong><small data-account-state>配置后自动登录</small></div>
             </div>
             <form class="form auth-form" novalidate>
                 <label class="field"><span class="field-label">账号</span><input class="input" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="用户名或邮箱" /></label>
@@ -46,7 +46,7 @@ export class AccountPanel {
                 <label class="field"><span class="field-label">API Key</span><input class="input" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示继续使用已保存的 Key" /></label>
                 <label class="field"><span class="field-label">Base URL</span><input class="input" name="base_url" type="url" required autocapitalize="none" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
                 <label class="field"><span class="field-label">模型</span><input class="input" name="model" required autocapitalize="none" spellcheck="false" placeholder="模型名称" /></label>
-                <label class="switch"><input name="use_ai_translation" type="checkbox" /><span class="switch-copy"><strong>用 AI 翻译标题</strong><small>开启后详情页的“翻译标题”改为调用此模型，关闭时使用默认翻译</small></span></label>
+                <label class="switch"><input name="use_ai_translation" type="checkbox" /><span class="switch-copy"><strong>用 AI 翻译标题</strong><small>用于详情页的“翻译标题”</small></span></label>
                 <p class="status-line translation-config-state" role="status"></p>
                 <div class="form-actions">
                     <button class="btn btn-primary translation-config-save" type="submit">保存</button>
@@ -56,8 +56,8 @@ export class AccountPanel {
             </form>`;
 
         this.container.innerHTML = [
-            block(false, { key: "account", title: "禁漫账号", note: "收藏、签到、消息与追更都依赖账号登录。", body: accountBody }),
-            block(this.collapsible, { key: "translation", title: "AI 标题翻译", note: "可选 · OpenAI 兼容接口", body: translationBody }),
+            block(false, { key: "account", title: "禁漫账号", note: "", body: accountBody }),
+            block(this.collapsible, { key: "translation", title: "AI 标题翻译", note: "可选", body: translationBody }),
         ].join("");
         if (this.collapsible) {
             // Inside the sheet the account block reads as a plain section, not a card.
@@ -109,7 +109,7 @@ export class AccountPanel {
         this.container.querySelector("[data-account-name]").textContent = configured ? name : "未配置账号";
         this.container.querySelector("[data-account-state]").textContent = configured
             ? (authSession.isLoggedIn ? `已登录 · ${authSession.user.levelName || "会员"}` : "已保存 · 使用时自动登录")
-            : "配置后自动登录，并同步收藏、消息与追更。";
+            : "配置后自动登录";
         this.authForm.querySelector(".clear-config-btn").hidden = !configured;
     }
 

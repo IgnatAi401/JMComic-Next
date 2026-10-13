@@ -13,32 +13,32 @@
 <body data-page="setting" class="">
     <a class="skip-link" href="#main">跳到主要内容</a>
     <main class="app-main" id="main" tabindex="-1"><div class="page setting-page">
-        <header class="page-head"><div class="page-head-copy"><span class="eyebrow">按你的习惯</span><h1 class="page-title">设置</h1><p class="page-lede">账号、翻译与偏好保存在本地服务，阅读设置仅保存在当前设备。</p></div></header>
+        <header class="page-head"><div class="page-head-copy"><h1 class="page-title">设置</h1></div></header>
         <div class="settings-stack">
             <section class="settings-section" aria-labelledby="settings-reading-title">
-                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-reading-title">阅读体验</h2><p class="settings-section-note">仅保存在此设备</p></div>
+                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-reading-title">阅读体验</h2></div>
                 <div class="group settings-reading" id="settings-reading"></div>
             </section>
             <section class="settings-section" aria-labelledby="settings-account-title">
                 <div class="settings-section-head"><h2 class="settings-section-title" id="settings-account-title">账号与翻译</h2></div>
                 <div class="group">
                 <button class="group-row" type="button" data-open-account><span class="settings-icon" data-tone="accent"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c.9-3.9 3.6-6 7.5-6s6.6 2.1 7.5 6"/></svg></span><span class="group-row-copy"><strong>JM 账号</strong><small><span data-account-name>读取配置中</span></small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
-                <button class="group-row" type="button" data-open-account="translation"><span class="settings-icon" data-tone="info"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h9M8.5 3.5v2"/><path d="M11 5.5c-.8 3.6-3.2 6.4-6.5 8"/><path d="M6.5 8.5c1 2.3 2.8 4 5 5"/><path d="m12.5 20.5 4-9.5 4 9.5M14 17h5"/></svg></span><span class="group-row-copy"><strong>AI 标题翻译（可选）</strong><small>用 OpenAI 兼容模型翻译详情页标题</small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                <button class="group-row" type="button" data-open-account="translation"><span class="settings-icon" data-tone="info"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h9M8.5 3.5v2"/><path d="M11 5.5c-.8 3.6-3.2 6.4-6.5 8"/><path d="M6.5 8.5c1 2.3 2.8 4 5 5"/><path d="m12.5 20.5 4-9.5 4 9.5M14 17h5"/></svg></span><span class="group-row-copy"><strong>AI 标题翻译（可选）</strong><small>OpenAI 兼容模型</small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
                 </div>
             </section>
             <section class="settings-section" aria-labelledby="settings-tag-title">
-                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-tag-title">标签偏好</h2><p class="settings-section-note">首页和详情页按这里的设置为标签着色</p></div>
+                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-tag-title">标签偏好</h2></div>
                 <div class="group preference-card" id="settings-tag-preferences"></div>
             </section>
             <section class="settings-section" aria-labelledby="settings-author-title">
-                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-author-title">作者偏好</h2><p class="settings-section-note">首页和详情页按这里的设置标记作者</p></div>
+                <div class="settings-section-head"><h2 class="settings-section-title" id="settings-author-title">作者偏好</h2></div>
                 <div class="group preference-card" id="settings-author-preferences"></div>
             </section>
             <section class="settings-section" aria-labelledby="settings-data-title">
                 <div class="settings-section-head"><h2 class="settings-section-title" id="settings-data-title">历史与资料</h2></div>
                 <div class="group" data-navigation-scope="same-tab">
-                <a class="group-row" href="./library.html?view=ratings"><span class="settings-icon" data-tone="warning"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.8 2.5 5.2 5.7.8-4.1 4 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4.1-4 5.7-.8z"/></svg></span><span class="group-row-copy"><strong>我的评分</strong><small>按分数筛选已评分的作品</small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></a>
-                <a class="group-row" href="./history-migration.html"><span class="settings-icon" data-tone="success"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><span class="group-row-copy"><strong>迁移旧浏览器历史</strong><small>将此浏览器中的旧阅读、随机历史合并到本地服务</small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></a>
+                <a class="group-row" href="./library.html?view=ratings"><span class="settings-icon" data-tone="warning"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.8 2.5 5.2 5.7.8-4.1 4 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4.1-4 5.7-.8z"/></svg></span><span class="group-row-copy"><strong>我的评分</strong></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></a>
+                <a class="group-row" href="./history-migration.html"><span class="settings-icon" data-tone="success"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><span class="group-row-copy"><strong>迁移旧浏览器历史</strong><small>合并到本地服务</small></span><svg class="chevron" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></a>
                 </div>
             </section>
         </div>

@@ -196,7 +196,7 @@ class AppShell {
                     <div class="chip-row">${HOT_TAGS.map((tag) => `<button class="chip" type="button" data-search-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join("")}</div>
                 </div>
                 <div class="sheet-section" data-navigation-scope="same-tab">
-                    <a class="group group-row" href="./categories.html">${icon("categories")}<span class="group-row-copy"><strong>按分类与排行浏览</strong><small>主分类、副分类、时间与排序</small></span>${icon("chevronRight", "chevron")}</a>
+                    <a class="group group-row" href="./categories.html">${icon("categories")}<span class="group-row-copy"><strong>按分类与排行浏览</strong></span>${icon("chevronRight", "chevron")}</a>
                 </div>`;
             const form = this.searchSheet.body.querySelector("form");
             form.addEventListener("submit", (event) => {

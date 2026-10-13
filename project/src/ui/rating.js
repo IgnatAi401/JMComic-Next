@@ -5,7 +5,7 @@ import { showToast } from "./toast.js";
 import { confirmAction } from "./confirm.js";
 
 const SCORE_LABELS = ["不值得读", "雷点明显", "中规中矩", "值得一看", "非常优秀"];
-const IDLE_CAPTION = "按整体阅读体验评分，点选即保存";
+const IDLE_CAPTION = "点选即保存";
 
 /** One 1–10 score per comic, saved to the local library as soon as it is picked. */
 export class RatingEditor {
