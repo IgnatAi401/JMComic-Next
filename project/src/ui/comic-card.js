@@ -15,7 +15,7 @@ const RICH_STATS = [["chapters", "章节", "list"], ["pages", "页数", "pages"]
  * statistics and stance-coloured tags and authors. Listing APIs omit these fields,
  * so they start as placeholders and `hydrateRichCards` fills them.
  */
-export const comicCardHtml = (comic, { meta = "" } = {}) => {
+export const comicCardHtml = (comic, { meta = "", footer = "" } = {}) => {
     const id = String(comic?.id ?? "").trim();
     const title = asText(comic?.name ?? comic?.title, "未命名作品");
     const href = detailUrl(id);
@@ -28,6 +28,7 @@ export const comicCardHtml = (comic, { meta = "" } = {}) => {
             ${meta ? `<p class="comic-meta rich-note">${escapeHtml(meta)}</p>` : ""}
             <div class="tag-list rich-tags" data-detail="tags" aria-live="polite"></div>
             <dl class="rich-stats">${RICH_STATS.map(([key, label, glyph]) => `<div title="${label}"><dt class="visually-hidden">${label}</dt>${glyph ? icon(glyph) : ""}<dd class="num" data-detail="${key}">—</dd></div>`).join("")}</dl>
+            ${footer}
         </div>
         ${id ? watchLaterButtonHtml(comic, { compact: true }) : ""}
     </article>`;

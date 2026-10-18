@@ -10,6 +10,8 @@ import { showToast } from "../ui/toast.js";
 import { libraryStore } from "../data/LibraryStore.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { renderPageError } from "../ui/states.js";
+import { icon } from "../ui/icons.js";
+import { createFavoriteFolderSheet, pickFavoriteFolder } from "../ui/favorite-folders.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -21,6 +23,7 @@ class LibraryPage {
     view = "favorites";
     page = 1;
     folderId = "0";
+    folders = [];
     remoteItems = [];
     remoteTotal = 0;
     localRatings = [];
@@ -97,6 +100,15 @@ class LibraryPage {
         this.loadMoreButton.addEventListener("click", () => this.loadRemotePage(this.page + 1, true));
         this.grid.addEventListener("click", (event) => {
             if (event.target.closest(".login-library")) openAccount();
+            const move = event.target.closest("[data-folder-move]");
+            if (move) this.moveToFolder(move);
+        });
+        this.folderTabs.addEventListener("click", (event) => {
+            const button = event.target.closest("button");
+            if (!button) return;
+            if (button.dataset.folderAction === "add") this.createFolder();
+            else if (button.dataset.folderAction === "delete") this.deleteFolder();
+            else if (button.dataset.id !== undefined) this.openFolder(button.dataset.id);
         });
         window.addEventListener("jm-auth-change", () => {
             const key = authSession.isConfigured ? String(authSession.user?.uid || authSession.configuredUsername || "") : "";
@@ -105,6 +117,7 @@ class LibraryPage {
             this.remoteRequestVersion += 1;
             this.remoteItems = [];
             this.remoteTotal = 0;
+            this.folders = [];
             this.folderTabs.replaceChildren();
             this.loadMoreButton.hidden = true;
             this.#syncRemoteButtons();
@@ -233,19 +246,70 @@ class LibraryPage {
     }
 
     renderFolders(folders) {
-        const normalized = [{ FID: "0", name: "全部收藏" }, ...folders.filter((folder) => String(folder.FID) !== "0")];
-        this.folderTabs.innerHTML = normalized.map((folder) => `
-            <button class="chip" aria-pressed="${String(folder.FID) === String(this.folderId)}" data-id=""${escapeHtml(folder.FID)}" type="button">${escapeHtml(folder.name)}</button>
-        `).join("");
-        this.folderTabs.querySelectorAll("button").forEach((button) => {
-            button.addEventListener("click", () => {
-                const version = ++this.remoteRequestVersion;
-                this.folderId = button.dataset.id;
-                this.page = 1;
-                this.remoteItems = [];
-                this.loadRemotePage(1, false, { version, folderId: this.folderId });
-            });
-        });
+        this.folders = folders.filter((folder) => String(folder.FID) !== "0").map((folder) => ({ id: String(folder.FID), name: String(folder.name ?? "") }));
+        this.#paintFolders();
+    }
+
+    #paintFolders() {
+        const tabs = [{ id: "0", name: "全部收藏" }, ...this.folders];
+        const current = this.folders.find((folder) => folder.id === String(this.folderId));
+        this.folderTabs.innerHTML = tabs.map((folder) =>
+            `<button class="chip" aria-pressed="${folder.id === String(this.folderId)}" data-id="${escapeHtml(folder.id)}" type="button">${escapeHtml(folder.name)}</button>`
+        ).join("") + `<button class="chip folder-tool" data-folder-action="add" type="button">${icon("plus")}新建收藏夹</button>`
+            + (current ? `<button class="chip folder-tool" data-folder-action="delete" type="button">${icon("trash")}删除「${escapeHtml(current.name)}」</button>` : "");
+    }
+
+    openFolder(folderId) {
+        const version = ++this.remoteRequestVersion;
+        this.folderId = String(folderId);
+        this.page = 1;
+        this.remoteItems = [];
+        this.#paintFolders();
+        return this.loadRemotePage(1, false, { version, folderId: this.folderId });
+    }
+
+    async createFolder() {
+        const folders = await createFavoriteFolderSheet();
+        if (!folders) return;
+        this.folders = folders;
+        this.#paintFolders();
+    }
+
+    async deleteFolder() {
+        const folder = this.folders.find((item) => item.id === String(this.folderId));
+        if (!folder) return;
+        if (!await confirmAction({ title: `删除收藏夹「${folder.name}」？`, message: "会删除 JM 账号里的这个收藏夹，操作不可撤销。", label: "确认删除" })) return;
+        try {
+            await jmApi.deleteFavoriteFolder(folder.id);
+            this.folders = this.folders.filter((item) => item.id !== folder.id);
+            showToast(`已删除收藏夹「${folder.name}」`);
+            this.openFolder("0");
+        } catch (error) {
+            showToast(error.message || "删除收藏夹失败", "warning");
+        }
+    }
+
+    async moveToFolder(button) {
+        const albumId = button.dataset.folderMove;
+        const target = await pickFavoriteFolder({ title: "移动到收藏夹", folders: this.folders, currentId: this.folderId === "0" ? "" : this.folderId });
+        // The picker may have created a folder; keep the tabs in step with it.
+        if (jmApi.favoriteFolders) { this.folders = jmApi.favoriteFolders; this.#paintFolders(); }
+        if (target === null || target === String(this.folderId)) return;
+        button.disabled = true;
+        try {
+            await jmApi.moveFavoriteToFolder(albumId, target);
+            const name = target === "0" ? "默认收藏夹" : this.folders.find((folder) => folder.id === target)?.name || "收藏夹";
+            showToast(`已移到「${name}」`);
+            if (this.folderId !== "0") {
+                this.remoteItems = this.remoteItems.filter((item) => String(item?.id) !== String(albumId));
+                this.remoteTotal = Math.max(0, this.remoteTotal - 1);
+                this.render();
+            }
+        } catch (error) {
+            showToast(error.message || "移动收藏夹失败", "warning");
+        } finally {
+            button.disabled = false;
+        }
     }
 
     renderRatingFilters() {
@@ -278,6 +342,7 @@ class LibraryPage {
         }
         this.grid.innerHTML = items.map((item) => comicCardHtml(item, {
             meta: this.view === "ratings" ? `我的评分 ${item.rating} / 10` : item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-CN") : "",
+            footer: this.view === "favorites" && item?.id ? `<button class="card-folder-move" type="button" data-folder-move="${escapeHtml(item.id)}">${icon("folder")}<span>移动收藏夹</span></button>` : "",
         })).join("");
         hydrateCovers(this.grid);
         hydrateRichCards(this.grid);

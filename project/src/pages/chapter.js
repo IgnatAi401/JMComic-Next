@@ -18,6 +18,7 @@ import { icon } from "../ui/icons.js";
 import { renderPageError } from "../ui/states.js";
 import { showToast } from "../ui/toast.js";
 import { watchLaterButtonHtml } from "../ui/watch-later.js";
+import { pickFavoriteFolder } from "../ui/favorite-folders.js";
 
 // Chapters shown before the list folds below the two-column layout (1280px); matches the nth-child rule in workspace.css.
 const CHAPTER_FOLD = 12;
@@ -272,6 +273,40 @@ class ChapterPage {
         } catch { /* Detail remains readable; actions offer a retry. */ }
     }
 
+    /**
+     * Without named folders the button simply toggles. With folders, adding asks which
+     * folder to use, and an already favourited work offers "move" or "取消收藏".
+     */
+    async favoriteAction(button) {
+        const id = this.album.id;
+        const saved = isApiTrue(await jmApi.getFavoriteState(id));
+        const folders = await jmApi.getFavoriteFolders().catch(() => []);
+        const pick = async (options) => {
+            button.classList.remove("is-busy");
+            try { return await pickFavoriteFolder({ folders, ...options }); } finally { button.classList.add("is-busy"); }
+        };
+        const moveTo = async (folderId) => {
+            await jmApi.moveFavoriteToFolder(id, folderId);
+            const name = folderId === "0" ? "默认收藏夹" : (jmApi.favoriteFolders || folders).find((folder) => folder.id === folderId)?.name || "收藏夹";
+            showToast(`已放入「${name}」`);
+        };
+        if (!saved) {
+            this.favorite = (await jmApi.updateFavoriteState(id, true)).saved;
+            this.renderAccountStates();
+            if (!this.favorite || !folders.length) return;
+            const target = await pick({ title: "放入收藏夹" });
+            if (target && target !== "0") await moveTo(target);
+            return;
+        }
+        if (!folders.length) {
+            this.favorite = (await jmApi.updateFavoriteState(id, false)).saved;
+            return;
+        }
+        const choice = await pick({ title: "已收藏 · 移动或取消", removable: true });
+        if (choice === "remove") this.favorite = (await jmApi.updateFavoriteState(id, false)).saved;
+        else if (choice) await moveTo(choice);
+    }
+
     async accountAction(button) {
         if (this.accountBusy) return;
         this.accountBusy = true;
@@ -286,9 +321,7 @@ class ChapterPage {
             this.accountVersion = (this.accountVersion || 0) + 1;
             const action = button.dataset.accountAction;
             if (action === "favorite") {
-                const current = await jmApi.getFavoriteState(this.album.id);
-                const result = await jmApi.updateFavoriteState(this.album.id, !isApiTrue(current));
-                this.favorite = result.saved;
+                await this.favoriteAction(button);
             } else if (action === "like") {
                 const current = await jmApi.getLikeState(this.album.id);
                 await jmApi.toggleLike(this.album.id);

@@ -7,6 +7,10 @@ import { listingApiOrder, listingCategoryPath, normalizeListingFilters } from ".
 // Check-in rewards appear as "Jcoin:10 EXP:10" or "[EXP:10] [COIN:2]".
 const DAILY_REWARD_PATTERN = /\[?\s*(J?COINS?|EXP)\s*[:：]\s*(\d+)\s*\]?/gi;
 
+const normalizeFavoriteFolders = (list) => list
+    .map((folder) => ({ id: String(folder?.FID ?? folder?.id ?? ""), name: String(folder?.name ?? "").trim() }))
+    .filter((folder) => folder.id && folder.id !== "0");
+
 /** Browser client for the JM mobile API. */
 class JmcomicApi {
     accessToken = null;
@@ -19,6 +23,7 @@ class JmcomicApi {
     accountAlbumRequests = new Map();
     favoriteIds = null;
     favoriteSnapshotPromise = null;
+    favoriteFolders = null;
     dailyCheckInPromise = null;
     dailyCheckInUserId = "";
     albumMemoryLimit = 500;
@@ -402,6 +407,7 @@ class JmcomicApi {
         if (this.sessionUserId && this.sessionUserId !== nextUserId) {
             this.favoriteIds = null;
             this.favoriteSnapshotPromise = null;
+            this.favoriteFolders = null;
             this.accountAlbumRequests.clear();
         }
         this.sessionUserId = nextUserId;
@@ -417,6 +423,7 @@ class JmcomicApi {
         if (this.sessionUserId && this.sessionUserId !== nextUserId) {
             this.favoriteIds = null;
             this.favoriteSnapshotPromise = null;
+            this.favoriteFolders = null;
             this.accountAlbumRequests.clear();
         }
         this.sessionUserId = nextUserId;
@@ -425,7 +432,43 @@ class JmcomicApi {
 
     async getFavorites(page = 1, folderId = "0", order = "mr") {
         const query = new URLSearchParams({ page, folder_id: folderId, o: order });
-        return (await this.#requestApi(`/favorite?${query}`, { authenticated: true })).result;
+        const result = (await this.#requestApi(`/favorite?${query}`, { authenticated: true })).result;
+        if (Array.isArray(result?.folder_list)) this.favoriteFolders = normalizeFavoriteFolders(result.folder_list);
+        return result;
+    }
+
+    /** Named folders of the account ({ id, name }); the default folder "0" is not listed. */
+    async getFavoriteFolders(force = false) {
+        if (this.favoriteFolders && !force) return this.favoriteFolders;
+        await this.getFavorites(1, "0", "mr");
+        return this.favoriteFolders || [];
+    }
+
+    async #favoriteFolderRequest(data, fallbackError) {
+        const { result } = await this.#requestApi("/favorite_folder", { method: "POST", data, authenticated: true });
+        const status = String(result?.status ?? "ok").toLowerCase();
+        if (status !== "ok") throw new Error(result?.msg || fallbackError);
+        this.favoriteFolders = null;
+        return result;
+    }
+
+    createFavoriteFolder(name) {
+        const folderName = String(name ?? "").trim();
+        if (!folderName) throw new Error("请输入收藏夹名称");
+        return this.#favoriteFolderRequest({ type: "add", folder_name: folderName }, "新建收藏夹失败");
+    }
+
+    async deleteFavoriteFolder(folderId) {
+        const result = await this.#favoriteFolderRequest({ type: "del", folder_id: String(folderId) }, "删除收藏夹失败");
+        // JM may drop the folder's albums with it, so the favourite-id snapshot is rebuilt next time.
+        this.favoriteIds = null;
+        await localRuntime.writeCache("favorites", "account", null);
+        return result;
+    }
+
+    /** Moves an album that is already favourited into `folderId` ("0" is the default folder). */
+    moveFavoriteToFolder(albumId, folderId) {
+        return this.#favoriteFolderRequest({ type: "move", folder_id: String(folderId), aid: String(albumId) }, "移动收藏夹失败");
     }
 
     async getFavoriteIds(force = false) {

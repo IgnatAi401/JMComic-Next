@@ -65,6 +65,7 @@ PROXY_PATH_METHODS = {
     "/daily": {"GET"},
     "/daily_chk": {"POST"},
     "/favorite": {"GET", "POST"},
+    "/favorite_folder": {"POST"},
     "/like": {"POST"},
     "/notifications": {"GET", "POST"},
     "/notifications/unreadCount": {"GET"},

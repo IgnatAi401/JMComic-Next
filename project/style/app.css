@@ -1584,3 +1584,33 @@ a.cover:active { transform: scale(0.98); }
 @media (pointer: coarse) {
     .chip, .segmented button { min-height: 44px; }
 }
+
+/* Favourite folders: picker sheet, folder tools and the card's move button. */
+.folder-pick { margin-bottom: 16px; }
+.folder-create { display: flex; gap: 8px; }
+.folder-create .input { flex: 1; min-width: 0; }
+.folder-create .btn { flex: none; }
+.folder-create + .confirm-actions { margin-top: 16px; }
+.chip.folder-tool { background: transparent; color: var(--text-3); }
+.chip.folder-tool svg { width: 15px; height: 15px; }
+.card-folder-move {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    margin-top: auto;
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-3);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+}
+.card-folder-move svg { width: 14px; height: 14px; }
+.card-folder-move:disabled { opacity: 0.5; }
+@media (hover: hover) {
+    .card-folder-move:hover { color: var(--text); }
+}
