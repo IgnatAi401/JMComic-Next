@@ -291,11 +291,19 @@ class ChapterPage {
             showToast(`已放入「${name}」`);
         };
         if (!saved) {
+            // JM can only favourite into the default folder, so the choice comes first and the
+            // move follows the favourite; dismissing the picker leaves the work unfavourited.
+            const target = folders.length ? await pick({ title: "收藏到" }) : "0";
+            if (!target) return;
             this.favorite = (await jmApi.updateFavoriteState(id, true)).saved;
             this.renderAccountStates();
-            if (!this.favorite || !folders.length) return;
-            const target = await pick({ title: "放入收藏夹" });
-            if (target && target !== "0") await moveTo(target);
+            if (!this.favorite) return;
+            if (target === "0") { if (folders.length) showToast("已放入「默认收藏夹」"); return; }
+            try {
+                await moveTo(target);
+            } catch (error) {
+                throw new Error(`已收藏，但未能放入所选收藏夹（${error.message || "移动失败"}），现在在默认收藏夹`);
+            }
             return;
         }
         if (!folders.length) {
