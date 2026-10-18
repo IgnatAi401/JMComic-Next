@@ -1,3 +1,4 @@
+import { autoCheckIn } from "../auth/AutoCheckIn.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { mountShell } from "../ui/shell.js";
 import { mountReadingControls } from "../ui/reading-controls.js";
@@ -6,6 +7,10 @@ import { AUTHOR_LEVELS, TAG_LEVELS, preferenceMaps } from "../ui/preferences.js"
 
 mountShell();
 mountReadingControls(document.querySelector("#settings-reading"));
+
+const autoCheckInSwitch = document.querySelector("[data-auto-checkin]");
+autoCheckInSwitch.checked = autoCheckIn.enabled;
+autoCheckInSwitch.addEventListener("change", () => autoCheckIn.setEnabled(autoCheckInSwitch.checked));
 
 const editors = [
     new PreferenceEditor(document.querySelector("#settings-tag-preferences"), { kind: "tag", levels: TAG_LEVELS, noun: "标签" }).mount(),

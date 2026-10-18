@@ -17,6 +17,7 @@
 .settings-stack .group-row-copy small { margin-top: 2px; }
 .settings-icon { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--tone-soft, var(--surface-2)); color: var(--tone, var(--text-2)); }
 .settings-icon svg { width: 18px; height: 18px; }
+.settings-switch-row input { margin-left: auto; }
 .settings-icon[data-tone="accent"] { --tone: var(--accent-text); --tone-soft: var(--accent-soft); }
 .settings-icon[data-tone="info"] { --tone: var(--info); --tone-soft: var(--info-soft); }
 .settings-icon[data-tone="success"] { --tone: var(--success); --tone-soft: var(--success-soft); }

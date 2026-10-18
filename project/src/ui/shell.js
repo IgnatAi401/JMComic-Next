@@ -1,5 +1,6 @@
 import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
+import { autoCheckIn } from "../auth/AutoCheckIn.js";
 import { setting } from "../core/Setting.js";
 import { openInNewPage } from "../utils/NavigationPolicy.js";
 import { AccountPanel } from "./account.js";
@@ -53,6 +54,7 @@ class AppShell {
                 .then(() => this.scheduleUnreadRefresh())
                 .catch(() => this.renderAccount());
         }
+        this.scheduleAutoCheckIn();
         return this;
     }
 
@@ -294,7 +296,17 @@ class AppShell {
         this.nav?.querySelector("[data-open-account]")?.setAttribute("aria-label", configured ? `账号配置，已配置 ${name}` : "账号配置，尚未配置");
     }
 
-    async checkIn() {
+    /** First visit of the day: check in silently in the background once the account config is known. */
+    scheduleAutoCheckIn() {
+        if (!autoCheckIn.enabled) return;
+        const run = () => authSession.loadLocalConfig().then(() => {
+            if (authSession.isConfigured && autoCheckIn.shouldRun(authSession.configuredUsername)) return this.checkIn({ auto: true });
+        }).catch(() => {});
+        if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 3000 });
+        else setTimeout(run, 1000);
+    }
+
+    async checkIn({ auto = false } = {}) {
         if (this.checkingIn) return;
         this.checkingIn = true;
         const labels = [...document.querySelectorAll("[data-checkin-label]")];
@@ -302,17 +314,25 @@ class AppShell {
         const original = labels.map((label) => label.textContent);
         labels.forEach((label) => { label.textContent = "签到中…"; });
         buttons.forEach((button) => { button.disabled = true; });
+        if (auto) autoCheckIn.markAttempt();
         try {
             await authSession.loadLocalConfig();
             if (!authSession.isConfigured) {
+                if (auto) return;
                 this.openAccount();
                 throw new Error("请先配置账号和密码");
             }
+            const username = authSession.configuredUsername;
             const user = await authSession.loginFromLocalConfig();
             const result = await jmApi.dailyCheckIn(user?.uid);
-            showToast(result.message || "签到结果未确认", result.status === "success" ? "success" : result.status === "already" ? "default" : "warning");
+            if (result.status === "success" || result.status === "already") autoCheckIn.markDone(username);
+            /* 自动签到时“今天已签到”不打扰用户。 */
+            if (auto && result.status === "already") return;
+            const message = result.message || "签到结果未确认";
+            showToast(auto ? `已自动签到：${message.replace(/^签到成功[：:]?\s*/, "") || "签到成功"}` : message, result.status === "success" ? "success" : result.status === "already" ? "default" : "warning");
         } catch (error) {
-            showToast(error.message || "签到失败，请稍后重试", "warning");
+            const message = error.message || "签到失败，请稍后重试";
+            showToast(auto ? `自动签到失败：${message}` : message, "warning");
         } finally {
             this.checkingIn = false;
             labels.forEach((label, index) => { label.textContent = original[index]; });
