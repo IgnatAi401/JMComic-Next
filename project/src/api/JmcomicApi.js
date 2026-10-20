@@ -179,7 +179,7 @@ class JmcomicApi {
             }
             if (!response.ok) {
                 const detail = payload?.error || payload?.msg || payload?.message;
-                throw new Error(`HTTP ${response.status}${typeof detail === "string" ? `：${detail}` : ""}`);
+                throw Object.assign(new Error(`HTTP ${response.status}${typeof detail === "string" ? `：${detail}` : ""}`), { status: response.status });
             }
             return { response, payload };
         };
@@ -674,7 +674,19 @@ class JmcomicApi {
             .map((item) => item.trim()).join("；");
     }
 
+    #isRefusedStatus(status) {
+        return status === 403 || status === 429;
+    }
+
+    #dailyError(message, cause) {
+        return Object.assign(new Error(message), { status: cause?.status });
+    }
+
     #dailyErrorDetail(error) {
+        if (this.#isRefusedStatus(error?.status)) {
+            const detail = String(error.message || "").replace(/^HTTP \d+[：:]?\s*/, "");
+            return `${detail || `上游接口拒绝访问（HTTP ${error.status}）`}，请过一段时间再试`;
+        }
         if (error?.name === "AbortError" || /timeout|timed out/i.test(error?.message || "")) return "请求超时";
         if (/failed to fetch|load failed|networkerror/i.test(error?.message || "")) return "网络连接中断，请检查网络和本地服务";
         if (/decryption failed/i.test(error?.message || "")) return "无法解密签到接口响应";
@@ -695,7 +707,7 @@ class JmcomicApi {
             const profile = await this.ensureAuthenticated({ refresh: true });
             if (String(profile?.uid ?? "") !== uid) throw new Error("重新登录后的账号与当前账号不一致");
         } catch (error) {
-            throw new Error(`登录凭证已失效（可能已过期或在其他地方登录），重新登录失败，签到未完成：${this.#dailyErrorDetail(error)}`);
+            throw this.#dailyError(`登录凭证已失效（可能已过期或在其他地方登录），重新登录失败，签到未完成：${this.#dailyErrorDetail(error)}`, error);
         }
         return this.#attemptDailyCheckIn(uid, true);
     }
@@ -707,7 +719,7 @@ class JmcomicApi {
             daily = await this.getDailyCheckInStatus(uid);
         } catch (error) {
             if (error?.emptyDailyResponse && !relogged) return null;
-            throw new Error(`读取签到活动失败，尚未提交签到：${this.#dailyErrorDetail(error)}`);
+            throw this.#dailyError(`读取签到活动失败，尚未提交签到：${this.#dailyErrorDetail(error)}`, error);
         }
         let response;
         try {
@@ -717,9 +729,13 @@ class JmcomicApi {
                 authenticated: true,
             });
         } catch (error) {
+            // 403/429 mean JM refused the request before handling it.
+            if (this.#isRefusedStatus(error?.status)) {
+                throw this.#dailyError(`签到被拒绝，签到未完成：${this.#dailyErrorDetail(error)}`, error);
+            }
             // A lost response does not imply that the server rejected the write.
             // Never automatically repeat this POST after an ambiguous failure.
-            throw new Error(`签到结果未确认：${this.#dailyErrorDetail(error)}。请求可能已生效，请稍后再次签到确认。`);
+            throw this.#dailyError(`签到结果未确认：${this.#dailyErrorDetail(error)}。请求可能已生效，请稍后再次签到确认。`, error);
         }
         const { result, payload } = response;
         const message = [...new Set([this.#dailyMessage(result), this.#dailyMessage(payload)].filter(Boolean))].join("；");
@@ -761,7 +777,7 @@ class JmcomicApi {
     #assertDailyCheckInEnvelope(payload) {
         if (!payload || typeof payload !== "object" || payload.code == null) return;
         if (Number(payload.code) === 200) return;
-        throw new Error(`签到接口状态 ${payload.code}：${this.#dailyMessage(payload) || "接口未提供原因"}`);
+        throw Object.assign(new Error(`签到接口状态 ${payload.code}：${this.#dailyMessage(payload) || "接口未提供原因"}`), { status: Number(payload.code) });
     }
 
     async getNotifications() {

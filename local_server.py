@@ -60,6 +60,11 @@ VERSIONED_LINK = re.compile(r'(\b(?:src|href)=")\./((?:src|style)/)')
 JM_TOKEN_SECRET = "185Hcomic3PAPP7R"
 JM_DATA_SECRETS = ("185Hcomic3PAPP7R", "18comicAPPContent")
 JM_APP_VERSION = "3.2.0"
+# Look like the official Android app; API lines behind Cloudflare may answer 403 to unknown clients.
+JM_APP_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36"
+)
 PROXY_PATH_METHODS = {
     "/album": {"GET"},
     "/daily": {"GET"},
@@ -77,6 +82,11 @@ PROXY_MULTIPART_PATHS = {"/daily_chk"}
 # A dead login session makes these answer 200 with a blank body; pass it on as JM's
 # usual empty result so the browser re-logs in instead of reporting invalid JSON.
 PROXY_BLANK_AS_EMPTY_PATHS = {"/daily", "/daily_chk"}
+# Upstream answers that mean one API line refused the request before handling it, so the
+# same session may be tried on the next line. Writes only move on after such a refusal;
+# a GET also moves on after server errors, timeouts or a non-JSON body.
+PROXY_REFUSED_STATUSES = {HTTPStatus.FORBIDDEN, HTTPStatus.TOO_MANY_REQUESTS}
+PROXY_RETRYABLE_GET_STATUSES = PROXY_REFUSED_STATUSES | {500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
 CACHE_CLEANUP_LOCK = threading.Lock()
 PROXY_DNS_CACHE_TTL = 5 * 60
 PROXY_DNS_CACHE = {}
@@ -166,6 +176,25 @@ def load_jm_json(raw: bytes) -> object:
     return json.loads(strip_json_bom(raw).decode("utf-8"))
 
 
+def is_json_body(raw: bytes) -> bool:
+    try:
+        load_jm_json(raw)
+        return True
+    except (UnicodeDecodeError, ValueError):
+        return False
+
+
+def upstream_error_message(status: int, lines: int) -> str:
+    tried = f"（已尝试 {lines} 条线路）" if lines > 1 else ""
+    if status == HTTPStatus.FORBIDDEN:
+        return f"上游接口拒绝访问（HTTP 403），可能是线路风控或请求过于频繁{tried}"
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        return f"上游接口请求过于频繁（HTTP 429）{tried}"
+    if status >= 500:
+        return f"上游服务器暂时异常（HTTP {status}）{tried}"
+    return f"上游接口返回 HTTP {status}{tried}"
+
+
 def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
     openssl = shutil.which("openssl")
     if not openssl:
@@ -214,7 +243,7 @@ def request_jm_login(username: str, password: str, servers: list[str]) -> tuple[
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             "token": token,
             "tokenParam": f"{timestamp},{JM_APP_VERSION}",
-            "User-Agent": "JMComic-WebUI-Local/1.0",
+            "User-Agent": JM_APP_USER_AGENT,
         }
         request = Request(f"https://{candidate}/login", data=payload, headers=headers, method="POST")
         try:
@@ -314,6 +343,12 @@ class JmSessionManager:
             self.session = ""
             self.profile = None
             return self.ensure(servers)
+
+    def prefer_server(self, session: str, server: str) -> None:
+        # Another API line answered for this session; keep using it while it works.
+        with self.lock:
+            if self.session == session and self.profile:
+                self.server = server
 
     def login(self, username: str, password: str, servers: list[str]) -> None:
         server, session, raw_profile = request_jm_login(username, password, servers)
@@ -873,28 +908,31 @@ class LocalHandler(SimpleHTTPRequestHandler):
             else:
                 payload = urlencode(fields).encode("utf-8")
                 content_type = "application/x-www-form-urlencoded;charset=UTF-8"
+        retryable_statuses = PROXY_RETRYABLE_GET_STATUSES if method == "GET" else PROXY_REFUSED_STATUSES
         try:
             servers = None
             state = jm_session.active()
             if state is None:
                 servers = normalize_proxy_servers(body.get("servers"))
                 state = jm_session.ensure(servers)
-            for attempt in range(2):
+            lines = [state["server"]]
+            index = 0
+            refreshed = False
+            failure = None
+            tried = 0
+            while index < len(lines):
+                server = lines[index]
+                tried = index + 1
                 headers = {
                     "Accept": "application/json",
                     "token": token,
                     "tokenParam": token_param,
                     "Cookie": f"AVS={state['session']}",
-                    "User-Agent": "JMComic-WebUI-Local/1.0",
+                    "User-Agent": JM_APP_USER_AGENT,
                 }
                 if method == "POST":
                     headers["Content-Type"] = content_type
-                request = Request(
-                    f"https://{state['server']}{path}",
-                    data=payload,
-                    headers=headers,
-                    method=method,
-                )
+                request = Request(f"https://{server}{path}", data=payload, headers=headers, method=method)
                 try:
                     with urlopen(request, timeout=20) as response:
                         response_body = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
@@ -903,17 +941,45 @@ class LocalHandler(SimpleHTTPRequestHandler):
                         response_body = strip_json_bom(response_body)
                         if parsed_path.path in PROXY_BLANK_AS_EMPTY_PATHS and not response_body.strip():
                             response_body = b'{"code":200,"data":[]}'
-                        self.send_raw_json(response_body, status=response.status)
-                        return
+                        if is_json_body(response_body):
+                            if server != state["server"]:
+                                jm_session.prefer_server(state["session"], server)
+                            self.send_raw_json(response_body, status=response.status)
+                            return
+                        # e.g. "Could not connect to mysql!" with status 200: this line is broken.
+                        failure = (HTTPStatus.BAD_GATEWAY, None)
+                        if method != "GET":
+                            break
                 except HTTPError as error:
-                    response_body = error.read(MAX_PROXY_RESPONSE_BYTES + 1)
-                    if error.code == HTTPStatus.UNAUTHORIZED and attempt == 0:
+                    response_body = strip_json_bom(error.read(MAX_PROXY_RESPONSE_BYTES + 1)[:MAX_PROXY_RESPONSE_BYTES])
+                    if error.code == HTTPStatus.UNAUTHORIZED and not refreshed:
+                        refreshed = True
                         if servers is None:
                             servers = normalize_proxy_servers(body.get("servers"))
                         state = jm_session.refresh_if_current(state["session"], servers)
+                        lines, index = [state["server"]], 0
                         continue
-                    self.send_raw_json(strip_json_bom(response_body[:MAX_PROXY_RESPONSE_BYTES]), status=error.code)
-                    return
+                    failure = (error.code, response_body if is_json_body(response_body) else None)
+                    if error.code not in retryable_statuses:
+                        break
+                except (URLError, OSError):
+                    # A write may have reached JM before the connection broke; never repeat it.
+                    if method != "GET":
+                        raise
+                    failure = (HTTPStatus.BAD_GATEWAY, None)
+                if len(lines) == 1:
+                    if servers is None:
+                        try:
+                            servers = normalize_proxy_servers(body.get("servers"))
+                        except JmSessionError:
+                            servers = []
+                    lines += [candidate for candidate in servers if candidate != lines[0]]
+                index += 1
+            status, response_body = failure or (HTTPStatus.BAD_GATEWAY, None)
+            if response_body is not None:
+                self.send_raw_json(response_body, status=status)
+            else:
+                self.send_json({"error": upstream_error_message(status, tried)}, status=status)
         except JmSessionError as error:
             self.send_json({"error": str(error)}, status=HTTPStatus.UNAUTHORIZED)
         except (URLError, OSError, ValueError):

@@ -332,7 +332,15 @@ class AppShell {
             showToast(auto ? `已自动签到：${message.replace(/^签到成功[：:]?\s*/, "") || "签到成功"}` : message, result.status === "success" ? "success" : result.status === "already" ? "default" : "warning");
         } catch (error) {
             const message = error.message || "签到失败，请稍后重试";
-            showToast(auto ? `自动签到失败：${message}` : message, "warning");
+            if (!auto) {
+                showToast(message, "warning");
+                return;
+            }
+            const refused = error.status === 403 || error.status === 429 || /HTTP (?:403|429)/.test(message);
+            const willRetry = authSession.configuredUsername
+                ? autoCheckIn.markFailure(authSession.configuredUsername, { refused })
+                : true;
+            showToast(`自动签到失败：${message}${willRetry ? "" : "。今天不再自动重试，可稍后手动签到"}`, "warning");
         } finally {
             this.checkingIn = false;
             labels.forEach((label, index) => { label.textContent = original[index]; });
