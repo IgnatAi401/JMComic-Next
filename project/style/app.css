@@ -1279,6 +1279,18 @@ a.cover:active { transform: scale(0.98); }
     transition: opacity var(--t-med) var(--ease);
 }
 .sheet.is-open .sheet-backdrop { opacity: 1; }
+/* Safari 26+ samples bar colours from what touches the viewport edges when the sheet
+ * opens, before the panel has slid in. A static strip in the panel colour at the bottom
+ * edge makes that sample match the panel; the panel covers it once in place. */
+.sheet::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 2px;
+    background: var(--elevated);
+    pointer-events: none;
+}
+.sheet:not(.is-open)::after { display: none; }
 .sheet-panel {
     position: relative;
     display: flex;
@@ -1332,6 +1344,7 @@ a.cover:active { transform: scale(0.98); }
     }
     .sheet.is-open .sheet-panel { opacity: 1; }
     .sheet-grabber { display: none; }
+    .sheet::after { display: none; }
     .sheet-head { padding: 16px 14px 8px 24px; }
     .sheet-body { padding: 4px 24px 24px; }
     .sheet.is-wide .sheet-panel { width: min(860px, 100%); }
@@ -1343,9 +1356,13 @@ a.cover:active { transform: scale(0.98); }
     width: 100%; height: 100%; max-height: 100%; border-radius: 0;
     transform: translateX(-100%); opacity: 1;
     padding-top: var(--safe-top);
+    /* No top highlight: it reads as a seam under Safari's status bar. */
+    box-shadow: none;
 }
 .navigation-drawer.is-open .sheet-panel { transform: translateX(0); }
 .navigation-drawer .sheet-grabber { display: none; }
+/* Full-screen drawer: both edges should sample the panel colour, not a dim page. */
+.navigation-drawer .sheet-backdrop { background: var(--elevated); }
 .navigation-drawer .sheet-head { padding: 12px max(16px, var(--safe-right)) 12px max(20px, var(--safe-left)); }
 .navigation-drawer .sheet-body { flex: 1; padding-inline: max(20px, var(--safe-left)) max(20px, var(--safe-right)); }
 .navigation-drawer .nav-item { flex-direction: row; justify-content: flex-start; width: 100%; }
@@ -1522,7 +1539,8 @@ a.cover:active { transform: scale(0.98); }
     color: var(--text);
     font-size: 14px;
     line-height: 1.45;
-    box-shadow: var(--shadow-3), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    /* A tight shadow: a wide one leaves a murky halo over the page behind. */
+    box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     overflow-wrap: anywhere;
     opacity: 0;
     transform: translateY(8px);

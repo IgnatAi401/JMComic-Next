@@ -139,12 +139,19 @@ class AppShell {
         document.addEventListener("click", (event) => {
             const trigger = event.target.closest("[data-open-search], [data-open-more], [data-open-account], [data-open-reading], [data-checkin]");
             if (!trigger) return;
-            const opener = trigger.closest(".mobile-navigation") ? menuToggle : trigger;
-            if (trigger.hasAttribute("data-open-search")) this.openSearch(opener);
-            else if (trigger.hasAttribute("data-open-more")) this.openMore(opener);
-            else if (trigger.hasAttribute("data-open-account")) this.openAccount(trigger.dataset.openAccount || "", opener);
-            else if (trigger.hasAttribute("data-open-reading")) this.openReading(opener);
-            else if (trigger.hasAttribute("data-checkin")) this.checkIn();
+            const fromMenu = Boolean(trigger.closest(".mobile-navigation"));
+            const opener = fromMenu ? menuToggle : trigger;
+            const run = () => {
+                if (trigger.hasAttribute("data-open-search")) this.openSearch(opener);
+                else if (trigger.hasAttribute("data-open-more")) this.openMore(opener);
+                else if (trigger.hasAttribute("data-open-account")) this.openAccount(trigger.dataset.openAccount || "", opener);
+                else if (trigger.hasAttribute("data-open-reading")) this.openReading(opener);
+                else if (trigger.hasAttribute("data-checkin")) this.checkIn();
+            };
+            // Safari only re-tints its bars when the drawer has really gone; swapping the
+            // drawer for a sheet in one frame keeps the drawer colour behind the sheet.
+            if (fromMenu) requestAnimationFrame(() => requestAnimationFrame(run));
+            else run();
         });
         const renderSource = () => {
             nav.querySelector("[data-source-label]").textContent = `图源 ${Number(setting.using_imgserver_index) + 1} · 并发 ${setting.image_load_batch_size}`;
