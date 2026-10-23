@@ -242,14 +242,14 @@ const sideAuthorHtml = (item, fallback = "未知作者") => {
 };
 
 const savedMeta = (item) => (item.savedAt ? formatDateTime(item.savedAt) : "");
+const sideListMarkup = new WeakMap();
 
 function renderSideList(section, items, { removable = false, meta = savedMeta, highlight = () => false, unknownAuthor = "未知作者" } = {}) {
     section.hidden = !items.length;
     const side = section.closest(".home-side");
     side.removeAttribute("data-pending");
     side.hidden = [...side.querySelectorAll(".continue")].every((node) => node.hidden);
-    if (!items.length) return;
-    section.querySelector(".continue-list").innerHTML = items.map((item) => {
+    const html = items.map((item) => {
         const title = asText(item.name ?? item.title, "未命名作品");
         const href = detailUrl(item.id);
         return `<li class="continue-item${removable ? " later-item" : ""}${highlight(item) ? " is-highlight" : ""}">
@@ -261,6 +261,10 @@ function renderSideList(section, items, { removable = false, meta = savedMeta, h
             ${removable ? `<button class="later-remove" type="button" data-later-remove="${escapeHtml(item.id)}" aria-label="从稍后再看移除《${escapeHtml(title)}》" title="移除">${icon("close")}</button>` : ""}
         </li>`;
     }).join("");
+    // Preserve loaded covers when unrelated library events leave this list unchanged.
+    if (sideListMarkup.get(section) === html) return;
+    section.querySelector(".continue-list").innerHTML = html;
+    sideListMarkup.set(section, html);
     hydrateCovers(section);
 }
 
@@ -403,9 +407,9 @@ class HomePage {
         const random = new RandomPick(document.querySelector(".random"));
         // The random pick and the shelves are independent; load them side by side.
         await Promise.all([
+            libraryStore.init().catch(() => {}).finally(() => { renderWatchLater(); renderContinueReading(); }),
             random.init()
-                .catch((error) => { document.querySelector("[data-random-status]").textContent = error.message || "随机历史暂时不可用"; })
-                .finally(() => { renderWatchLater(); renderContinueReading(); }),
+                .catch((error) => { document.querySelector("[data-random-status]").textContent = error.message || "随机历史暂时不可用"; }),
             renderShelves().catch((error) => renderPageError(".shelves", error, { title: "书架加载失败", action: null })),
         ]);
     }
