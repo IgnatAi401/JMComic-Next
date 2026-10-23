@@ -21,6 +21,7 @@ const PERSONAL = [
     { page: "library", label: "书架", rail: "书架", icon: "library" },
     { page: "messages", label: "消息与追更", rail: "消息", icon: "messages", badge: true },
 ];
+const MENU_HANDOFF_MS = 200;
 const HOT_TAGS = ["巨乳", "乳汁", "修女", "催眠", "女仆", "怪物女孩", "常识改变"];
 
 const navLink = (item, current) => `
@@ -148,9 +149,10 @@ class AppShell {
                 else if (trigger.hasAttribute("data-open-reading")) this.openReading(opener);
                 else if (trigger.hasAttribute("data-checkin")) this.checkIn();
             };
-            // Safari only re-tints its bars when the drawer has really gone; swapping the
-            // drawer for a sheet in one frame keeps the drawer colour behind the sheet.
-            if (fromMenu) requestAnimationFrame(() => requestAnimationFrame(run));
+            // Safari only re-tints its bars when the drawer has really gone, and it ignores a
+            // second re-tint that follows too closely (real iPhones more than the simulator),
+            // so give the closed drawer a moment before the next sheet opens.
+            if (fromMenu) setTimeout(run, MENU_HANDOFF_MS);
             else run();
         });
         const renderSource = () => {

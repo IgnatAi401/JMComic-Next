@@ -1279,10 +1279,11 @@ a.cover:active { transform: scale(0.98); }
     transition: opacity var(--t-med) var(--ease);
 }
 .sheet.is-open .sheet-backdrop { opacity: 1; }
-/* Safari 26+ samples its bar colours from what touches the viewport edges at the moment
- * the page is pinned, mid-animation. Static strips in the final colours sit at both edges
- * from the first frame (under the panel), so that sample is already right. */
-.sheet { --edge-top: #070709; /* --overlay over --bg */ --edge-bottom: var(--elevated); --edge-h: 2px; }
+/* Safari 26+ samples its bar colours from a band along the viewport edges at the moment
+ * the page is pinned, mid-animation. Static strips in the final colours fill that band
+ * from the first frame (under the panel), so the sample is already right; Safari keeps
+ * it, so the strips drop out once the open transition is done. */
+.sheet { --edge-top: #070709; /* --overlay over --bg */ --edge-bottom: var(--elevated); --edge-h: 32px; }
 .sheet::before,
 .sheet::after {
     content: "";
@@ -1296,6 +1297,9 @@ a.cover:active { transform: scale(0.98); }
 .sheet::after { bottom: 0; background: var(--edge-bottom); }
 .sheet:not(.is-open)::before,
 .sheet:not(.is-open)::after { display: none; }
+.sheet.is-open::before,
+.sheet.is-open::after { animation: sheet-edge-out 1ms 420ms forwards; }
+@keyframes sheet-edge-out { to { visibility: hidden; } }
 .sheet-panel {
     position: relative;
     z-index: 2;
