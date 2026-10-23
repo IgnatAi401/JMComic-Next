@@ -87,7 +87,6 @@ const bindEscape = () => {
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 let sheetCount = 0;
-const LOCK_AFTER_OPEN_MS = 400; // just past --t-slow, the panel's open transition
 
 export class Sheet {
     constructor({ name, title = "", wide = false, onOpen = null, onClose = null } = {}) {
@@ -131,11 +130,9 @@ export class Sheet {
         this.isOpen = true;
         this.opener = opener;
         openSheets.push(this);
-        // Safari 26+ samples its bar colours from the viewport edges when the body gets
-        // pinned. Pin after the open transition so it samples the sheet in place rather
-        // than a half-faded backdrop (a reused sheet animates; a new one appears at once).
-        clearTimeout(this.lockTimer);
-        this.lockTimer = setTimeout(() => { if (this.isOpen) lockPageScroll(this); }, LOCK_AFTER_OPEN_MS);
+        // Pinning the body is when Safari 26+ samples its bar colours; the static edge
+        // strips in app.css (.sheet::before/::after) make that first sample final.
+        lockPageScroll(this);
         syncModalBackground();
         this.root.inert = false;
         this.root.classList.add("is-open");
@@ -157,7 +154,6 @@ export class Sheet {
         if (!this.isOpen) return;
         this.isOpen = false;
         clearTimeout(this.focusTimer);
-        clearTimeout(this.lockTimer);
         const index = openSheets.indexOf(this);
         if (index >= 0) openSheets.splice(index, 1);
         syncModalBackground();

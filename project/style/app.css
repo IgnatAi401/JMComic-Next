@@ -1279,20 +1279,26 @@ a.cover:active { transform: scale(0.98); }
     transition: opacity var(--t-med) var(--ease);
 }
 .sheet.is-open .sheet-backdrop { opacity: 1; }
-/* Safari 26+ samples bar colours from what touches the viewport edges when the sheet
- * opens, before the panel has slid in. A static strip in the panel colour at the bottom
- * edge makes that sample match the panel; the panel covers it once in place. */
+/* Safari 26+ samples its bar colours from what touches the viewport edges at the moment
+ * the page is pinned, mid-animation. Static strips in the final colours sit at both edges
+ * from the first frame (under the panel), so that sample is already right. */
+.sheet { --edge-top: #070709; /* --overlay over --bg */ --edge-bottom: var(--elevated); --edge-h: 2px; }
+.sheet::before,
 .sheet::after {
     content: "";
     position: absolute;
-    left: 0; right: 0; bottom: 0;
-    height: 2px;
-    background: var(--elevated);
+    left: 0; right: 0;
+    z-index: 1;
+    height: var(--edge-h);
     pointer-events: none;
 }
+.sheet::before { top: 0; background: var(--edge-top); }
+.sheet::after { bottom: 0; background: var(--edge-bottom); }
+.sheet:not(.is-open)::before,
 .sheet:not(.is-open)::after { display: none; }
 .sheet-panel {
     position: relative;
+    z-index: 2;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -1344,7 +1350,7 @@ a.cover:active { transform: scale(0.98); }
     }
     .sheet.is-open .sheet-panel { opacity: 1; }
     .sheet-grabber { display: none; }
-    .sheet::after { display: none; }
+    .sheet::before, .sheet::after { display: none; }
     .sheet-head { padding: 16px 14px 8px 24px; }
     .sheet-body { padding: 4px 24px 24px; }
     .sheet.is-wide .sheet-panel { width: min(860px, 100%); }
@@ -1363,6 +1369,7 @@ a.cover:active { transform: scale(0.98); }
 .navigation-drawer .sheet-grabber { display: none; }
 /* Full-screen drawer: both edges should sample the panel colour, not a dim page. */
 .navigation-drawer .sheet-backdrop { background: var(--elevated); }
+.navigation-drawer { --edge-top: var(--elevated); }
 .navigation-drawer .sheet-head { padding: 12px max(16px, var(--safe-right)) 12px max(20px, var(--safe-left)); }
 .navigation-drawer .sheet-body { flex: 1; padding-inline: max(20px, var(--safe-left)) max(20px, var(--safe-right)); }
 .navigation-drawer .nav-item { flex-direction: row; justify-content: flex-start; width: 100%; }
