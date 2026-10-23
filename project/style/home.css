@@ -60,7 +60,6 @@
     background: var(--surface);
     box-shadow: var(--line-inset);
     isolation: isolate;
-    container-type: inline-size;
 }
 .random-backdrop {
     position: absolute;
@@ -219,17 +218,16 @@
     --btn-press: rgba(255, 197, 61, 0.26);
     box-shadow: inset 0 0 0 1px var(--accent-line);
 }
-/* A narrow card makes 稍后再看 a square icon button; its label stays for screen readers. */
-@container (max-width: 759px) {
-    .random-actions [data-random-later] { padding: 0; }
-    .random-actions [data-random-later] span {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-    }
+/* A narrow card (no [data-wide], set from its width by index.js) makes 稍后再看 a square
+   icon button; its label stays for screen readers. */
+.random:not([data-wide]) .random-actions [data-random-later] { padding: 0; }
+.random:not([data-wide]) .random-actions [data-random-later] span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
 }
 /* Phones: the header row sits close to the card edge and the cover. */
 @media (max-width: 699px) {
@@ -274,11 +272,9 @@
     .random-actions { align-self: end; }
 }
 @media (min-width: 700px) and (pointer: coarse) { .random-tags { max-height: 70px; } }
-@container (min-width: 760px) {
-    .random-actions { display: flex; }
-    /* Same width for all three, wide enough for “已在稍后再看”, so toggling never shifts the row. */
-    .random-actions .btn { flex: 0 0 auto; min-width: 140px; }
-}
+.random[data-wide] .random-actions { display: flex; }
+/* Same width for all three, wide enough for “已在稍后再看”, so toggling never shifts the row. */
+.random[data-wide] .random-actions .btn { flex: 0 0 auto; min-width: 140px; }
 @media (min-width: 1100px) {
     .random { grid-template-columns: 248px minmax(0, 1fr); gap: 16px 36px; padding: 28px; }
     .random-title { font-size: 28px; }
@@ -364,18 +360,10 @@
 
 /* ---- Shelves ---- */
 
-/* Six shelves hold ~180 rich cards: let off-screen ones skip style and layout,
-   otherwise every tag fit while scrolling recalculates the whole page.
-   This also clips painting to the box, so wide screens pad it for focus rings and cover shadows. */
-.shelf-items { content-visibility: auto; contain-intrinsic-size: auto 1900px; }
-@media (min-width: 700px) {
-    .shelf-items { margin: -12px; padding: 12px; }
-}
 .shelf-sub { margin-left: 6px; color: var(--text-3); font-size: 13px; font-weight: 500; letter-spacing: 0; }
 /* On iPhone each shelf is a swipeable rail; wider screens use the shared .comic-grid. */
 @media (max-width: 699px) {
     .shelf-items {
-        contain-intrinsic-size: auto 260px;
         grid-template-columns: none;
         grid-auto-flow: column;
         grid-auto-columns: min(340px, 88%);

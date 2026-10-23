@@ -32,6 +32,11 @@ class RandomPick {
     constructor(root) {
         this.root = root;
         this.q = (name) => root.querySelector(`[data-random-${name}]`);
+        // Wide cards fit every action label in one row. Not a container query: a query
+        // container makes Safari restyle the whole page for each change anywhere on it.
+        if (typeof ResizeObserver === "function") {
+            new ResizeObserver(([entry]) => root.toggleAttribute("data-wide", entry.contentRect.width >= 760)).observe(root);
+        }
     }
 
     async init() {

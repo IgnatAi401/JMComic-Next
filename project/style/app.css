@@ -1084,7 +1084,7 @@ a.cover:active { transform: scale(0.98); }
 
 /* Rich cards: cover beside the title, album statistics and tags. The cover sets the card
    height and the body fills it: title on its top edge, stats on its bottom edge, tags in
-   between. A body taller than the cover stretches the cover (cropped). */
+   between. On phones a body taller than the cover stretches the cover (cropped). */
 .rich-card {
     grid-template-columns: 120px minmax(0, 1fr);
     align-items: stretch;
@@ -1128,6 +1128,15 @@ a.cover:active { transform: scale(0.98); }
 }
 .rich-card > .cover { align-self: stretch; }
 .rich-card-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* From 700px the cover always leaves the body 20px+ to spare, so nothing needs stretching:
+   the body ignores its content when sized and the cover keeps its own ratio. Safari then
+   lays out only the changed card when details or a cover load, not every card on the page
+   (a stretched aspect-ratio cover alone made each change cost ~30ms on the home page).
+   Phone rails keep stretching, where a few cards run past the cover. */
+@media (min-width: 700px) {
+    .rich-card > .cover { align-self: start; }
+    .rich-card-body { contain: size layout; }
+}
 .rich-card .comic-meta { margin-top: -3px; }
 /* One line whatever the author count: stance hits lead and only a few names show (the
    rest fold into "+N"); long names shrink with an ellipsis so a badge always stays visible. */
