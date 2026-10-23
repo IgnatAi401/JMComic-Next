@@ -66,7 +66,7 @@ class AppShell {
         nav.dataset.navigationScope = "same-tab";
         nav.innerHTML = `
             <a class="brand" href="./index.html" aria-label="JMComic 发现">
-                <img src="./image/b5c2a091-eb74-4b78-99dd-b52dc2a1dfe5.png" alt="" width="32" height="32" />
+                <img src="./image/logo-64.png" alt="" width="32" height="32" />
                 <span class="brand-name">JM<b>Comic</b></span>
             </a>
             <form class="nav-search" role="search">
