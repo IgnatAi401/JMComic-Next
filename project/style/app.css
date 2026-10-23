@@ -1279,22 +1279,23 @@ a.cover:active { transform: scale(0.98); }
     transition: opacity var(--t-med) var(--ease);
 }
 .sheet.is-open .sheet-backdrop { opacity: 1; }
-/* Safari 26+ samples its bar colours from a band along the viewport edges at the moment
- * the page is pinned, mid-animation. Static strips in the final colours fill that band
+/* Safari 26+ samples (and averages) its bar colours from a band along the viewport
+ * edges at the moment the page is pinned, mid-animation. Static strips in the final colours fill that band
  * from the first frame (under the panel), so the sample is already right; Safari keeps
  * it, so the strips drop out once the open transition is done. */
-.sheet { --edge-top: #070709; /* --overlay over --bg */ --edge-bottom: var(--elevated); --edge-h: 32px; }
+.sheet { --edge-top: #070709; /* --overlay over --bg */ --edge-bottom: var(--elevated); --edge-top-h: 64px; --edge-bottom-h: 120px; }
 .sheet::before,
 .sheet::after {
     content: "";
     position: absolute;
     left: 0; right: 0;
     z-index: 1;
-    height: var(--edge-h);
     pointer-events: none;
 }
-.sheet::before { top: 0; background: var(--edge-top); }
-.sheet::after { bottom: 0; background: var(--edge-bottom); }
+/* Tall enough to fill the whole sampled band; a thin strip got averaged with the
+ * half-faded backdrop on real iPhones and came out darker than the panel. */
+.sheet::before { top: 0; height: var(--edge-top-h); background: var(--edge-top); }
+.sheet::after { bottom: 0; height: var(--edge-bottom-h); background: var(--edge-bottom); }
 .sheet:not(.is-open)::before,
 .sheet:not(.is-open)::after { display: none; }
 .sheet.is-open::before,
@@ -1309,7 +1310,9 @@ a.cover:active { transform: scale(0.98); }
     max-height: calc(var(--visual-viewport-height, 100dvh) - var(--safe-top) - 12px);
     border-radius: var(--r-xl) var(--r-xl) 0 0;
     background: var(--elevated);
-    box-shadow: var(--shadow-3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    /* No drop shadow on the bottom sheet: while it waits below the screen the shadow
+     * spills over the bottom edge strip and Safari samples a darker bar. */
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     transform: translateY(100%);
     transition: transform var(--t-slow) var(--ease-out);
     overscroll-behavior: contain;
@@ -1346,6 +1349,7 @@ a.cover:active { transform: scale(0.98); }
     .sheet { align-items: center; padding: calc(var(--safe-top) + 24px) calc(var(--safe-right) + 24px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 24px); }
     .sheet-panel {
         width: min(560px, 100%);
+        box-shadow: var(--shadow-3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         max-height: min(820px, 100%);
         border-radius: var(--r-xl);
         transform: translateY(10px) scale(0.985);
