@@ -11,8 +11,9 @@
     padding: 4px 6px;
     /* Fully opaque: artwork must never show through the controls. */
     background: #18181c;
-    border: 1px solid rgba(255, 255, 255, .1); border-radius: var(--r-xl);
-    box-shadow: 0 6px 18px -6px rgba(0, 0, 0, .55);
+    /* A hairline only, no drop shadow: the panel floats 10px above the edge where Safari
+     * clips the page, so any shadow reaching past it ends in a hard line. */
+    border: 1px solid rgba(255, 255, 255, .12); border-radius: var(--r-xl);
     /* No will-change here: on iOS Safari it left the decoded canvases painting blank.
      * Fade only, never slide: a panel moving toward the bottom edge gets sampled by Safari,
      * which then paints the area under its toolbar in the panel's black and keeps it. */
@@ -63,18 +64,19 @@
 .reader-tools.is-single :is([data-reader-prev], [data-reader-next], [data-reader-chapters]) { display: none; }
 .reader-tools.is-single .reader-scrubber { padding-left: 6px; }
 /* Reader sheets leave the page unpinned (overlay.js "contain"), so the artwork behind stays put.
- * Safari tints its status bar from whatever covers the top edge while a sheet animates. A translucent
- * or fading backdrop over artwork gave a different colour every frame (and a lighter one once the edge
- * strip dropped out), so the top flickered and the bar kept a wrong tint. An opaque backdrop in exactly
- * the edge-strip colour, switched on in one frame, leaves a single colour at the top from start to end. */
-.reader-body .sheet { --edge-top: #0b0b0d; }
-.reader-body .sheet-backdrop { background: #0b0b0d; }
-.reader-body .sheet.is-open .sheet-backdrop { transition: none; }
-.reader-body .sheet.is-open::before { display: block; }
-@media (min-width: 700px) {
-    .reader-body .sheet { --edge-bottom: #0b0b0d; }
-    .reader-body .sheet.is-open::after { display: block; }
+ * Whenever anything fixed covers the top edge, Safari re-tints its status bar from it: a dimming
+ * backdrop flickered through several colours and left a wrong tint, an opaque one blacked out the page.
+ * So reader sheets keep clear of the top edge altogether and draw no backdrop or edge strips; the page
+ * stays as it is and only the sheet itself appears. The transparent backdrop still closes on tap. */
+.reader-body .sheet {
+    --reader-sheet-gap: calc(var(--safe-top) + 64px);
+    top: calc(var(--visual-viewport-top, 0px) + var(--reader-sheet-gap));
+    height: calc(100vh - var(--reader-sheet-gap));
+    height: calc(var(--visual-viewport-height, 100dvh) - var(--reader-sheet-gap));
 }
+.reader-body .sheet-panel { max-height: 100%; }
+.reader-body .sheet-backdrop { background: transparent; }
+.reader-body .sheet::before, .reader-body .sheet::after { display: none; }
 /* Clip stray horizontal overflow so the strip never drifts sideways on touch screens. */
 .reader-body { overflow-x: clip; }
 /* Every page shares the column width, so slices of one strip line up seamlessly.
