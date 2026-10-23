@@ -1301,6 +1301,14 @@ a.cover:active { transform: scale(0.98); }
 .sheet.is-open::before,
 .sheet.is-open::after { animation: sheet-edge-out 1ms 420ms forwards; }
 @keyframes sheet-edge-out { to { visibility: hidden; } }
+/* Safari 26 starts the page below the status bar, so a top strip would sit on the in-flow
+ * masthead and hide it until the strip drops out. Ordinary sheets drop the strip and show
+ * their backdrop at full strength on open instead, so the top sample is final at once
+ * (closing still fades). The full-screen drawer covers the masthead anyway. */
+@media (max-width: 699px) {
+    .sheet:not(.navigation-drawer)::before { display: none; }
+    .sheet.is-open:not(.navigation-drawer) .sheet-backdrop { transition: none; }
+}
 .sheet-panel {
     position: relative;
     z-index: 2;
