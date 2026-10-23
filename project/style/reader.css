@@ -66,8 +66,10 @@
 /* Reader sheets leave the page unpinned (overlay.js "contain"), so the artwork behind stays put.
  * Whenever anything fixed covers the top edge, Safari re-tints its status bar from it: a dimming
  * backdrop flickered through several colours and left a wrong tint, an opaque one blacked out the page.
- * So reader sheets keep clear of the top edge altogether and draw no backdrop or edge strips; the page
- * stays as it is and only the sheet itself appears. The transparent backdrop still closes on tap. */
+ * So reader sheets keep clear of the top edge and draw no backdrop or top strip.
+ * Keep the shared bottom sampling strip: it supplies the panel colour from the first animation
+ * frame and disappears after opening, just like the home page sheets. The transparent backdrop
+ * still closes on tap. */
 .reader-body .sheet {
     --reader-sheet-gap: calc(var(--safe-top) + 64px);
     top: calc(var(--visual-viewport-top, 0px) + var(--reader-sheet-gap));
@@ -76,7 +78,7 @@
 }
 .reader-body .sheet-panel { max-height: 100%; }
 .reader-body .sheet-backdrop { background: transparent; }
-.reader-body .sheet::before, .reader-body .sheet::after { display: none; }
+.reader-body .sheet::before { display: none; }
 /* Clip stray horizontal overflow so the strip never drifts sideways on touch screens. */
 .reader-body { overflow-x: clip; }
 /* Every page shares the column width, so slices of one strip line up seamlessly.
