@@ -2,21 +2,25 @@
 .reader-page.page { padding: 0; max-width: none; }
 .reader-body .app-main { padding-top: 0; }
 /* One floating bottom panel; leave the viewport edges clear for Safari's browser chrome.
- * Keep image scrolling free of expensive blur effects: the panel is a near-opaque solid. */
+ * Keep image scrolling free of expensive blur effects: the panel is an opaque solid. */
 .reader-tools {
     position: fixed; z-index: 15;
     left: calc(var(--safe-left) + 10px); right: calc(var(--safe-right) + 10px);
     bottom: calc(var(--safe-bottom) + 10px);
     max-width: 640px; margin-inline: auto;
     padding: 4px 6px;
-    background: rgba(24, 24, 28, .94);
-    border: 1px solid var(--line-strong); border-radius: var(--r-xl);
-    box-shadow: var(--shadow-3);
-    transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease-out), visibility 0s;
+    /* Fully opaque: artwork must never show through the controls. */
+    background: #18181c;
+    border: 1px solid rgba(255, 255, 255, .1); border-radius: var(--r-xl);
+    box-shadow: 0 6px 18px -6px rgba(0, 0, 0, .55);
+    /* No will-change here: on iOS Safari it left the decoded canvases painting blank.
+     * Fade only, never slide: a panel moving toward the bottom edge gets sampled by Safari,
+     * which then paints the area under its toolbar in the panel's black and keeps it. */
+    transition: opacity var(--t-med) var(--ease), visibility 0s;
 }
 .reader-focus .reader-tools {
-    visibility: hidden; opacity: 0; transform: translateY(16px); pointer-events: none;
-    transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease), visibility 0s var(--t-med);
+    visibility: hidden; opacity: 0; pointer-events: none;
+    transition: opacity var(--t-med) var(--ease), visibility 0s var(--t-med);
 }
 .reader-tools .icon-btn { flex: none; width: 44px; height: 44px; }
 .reader-heading { display: flex; align-items: center; gap: 2px; min-height: 48px; }
@@ -28,12 +32,12 @@
 .reader-scrubber[hidden] { display: none; }
 .reader-position {
     flex: none; min-width: 72px; height: 36px; padding: 0 8px;
-    border: 0; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: var(--line-inset);
+    border: 0; border-radius: var(--r-sm); background: #222227; box-shadow: none;
     color: var(--text-2); font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .reader-position b { color: var(--accent-text); font-size: 14px; font-weight: 650; }
 .reader-position i { font-style: normal; color: var(--text-3); margin-inline: 3px; }
-.reader-position.is-scrubbing { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.reader-position.is-scrubbing { background: #3a3220; }
 /* Native range input restyled; WebKit paints the filled part from --fill. */
 .reader-slider {
     --fill: 0%;
@@ -43,14 +47,14 @@
 }
 .reader-slider::-webkit-slider-runnable-track {
     height: 4px; border-radius: 2px;
-    background: linear-gradient(to right, var(--accent) var(--fill), var(--surface-3) var(--fill));
+    background: linear-gradient(to right, var(--accent) var(--fill), #34343b var(--fill));
 }
 .reader-slider::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
     width: 20px; height: 20px; margin-top: -8px; border-radius: 50%;
     background: var(--text); border: 0; box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
 }
-.reader-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-3); }
+.reader-slider::-moz-range-track { height: 4px; border-radius: 2px; background: #34343b; }
 .reader-slider::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
 .reader-slider::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; border: 0; background: var(--text); }
 .reader-slider:focus-visible { outline: none; }
@@ -58,17 +62,19 @@
 /* Single-chapter works have nowhere to go; keep the slider wide instead. */
 .reader-tools.is-single :is([data-reader-prev], [data-reader-next], [data-reader-chapters]) { display: none; }
 .reader-tools.is-single .reader-scrubber { padding-left: 6px; }
-/* Page counter while the panel is hidden: small, out of the way, never clickable. */
-.reader-pill {
-    position: fixed; z-index: 14;
-    right: calc(var(--safe-right) + 10px); bottom: calc(var(--safe-bottom) + 10px);
-    padding: 3px 8px; border-radius: 999px;
-    background: rgba(0, 0, 0, .55); color: rgba(255, 255, 255, .78);
-    font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none;
-    opacity: 0; transition: opacity var(--t-med) var(--ease);
+/* Reader sheets leave the page unpinned (overlay.js "contain"), so the artwork behind stays put.
+ * Safari tints its status bar from whatever covers the top edge while a sheet animates. A translucent
+ * or fading backdrop over artwork gave a different colour every frame (and a lighter one once the edge
+ * strip dropped out), so the top flickered and the bar kept a wrong tint. An opaque backdrop in exactly
+ * the edge-strip colour, switched on in one frame, leaves a single colour at the top from start to end. */
+.reader-body .sheet { --edge-top: #0b0b0d; }
+.reader-body .sheet-backdrop { background: #0b0b0d; }
+.reader-body .sheet.is-open .sheet-backdrop { transition: none; }
+.reader-body .sheet.is-open::before { display: block; }
+@media (min-width: 700px) {
+    .reader-body .sheet { --edge-bottom: #0b0b0d; }
+    .reader-body .sheet.is-open::after { display: block; }
 }
-.reader-pill b { font-weight: 600; color: #fff; }
-.reader-focus .reader-pill { opacity: 1; }
 /* Clip stray horizontal overflow so the strip never drifts sideways on touch screens. */
 .reader-body { overflow-x: clip; }
 /* Every page shares the column width, so slices of one strip line up seamlessly.
@@ -81,7 +87,8 @@
     height: auto !important;
 }
 .reader-images > .reader-page[data-state="error"] { aspect-ratio: auto; }
-.reader-images > .reader-page[data-state="pending"]::after, .reader-images > .reader-page[data-state="rendering"]::after { content: "正在载入第 " attr(data-page-number) " 页"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-3); font-size: 12px; pointer-events: none; }
+/* Tall pages would centre the label off screen and read as a blank page; keep it near the top. */
+.reader-images > .reader-page[data-state="pending"]::after, .reader-images > .reader-page[data-state="rendering"]::after { content: "正在载入第 " attr(data-page-number) " 页"; position: absolute; inset: 0; display: grid; place-items: start center; padding-top: min(40svh, 45%); color: var(--text-3); font-size: 12px; pointer-events: none; }
 .reader-page img, .reader-page canvas { display: block; width: 100%; height: auto; }
 .reader-images > .reader-page > div:not(.reader-image-error) { width: 100%; }
 .reader-image-error { min-height: 55svh; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; padding: 24px; text-align: center; color: var(--text-2); }
@@ -116,6 +123,4 @@ a.btn[aria-disabled="true"] { opacity: .3; pointer-events: none; }
     .reader-heading { flex: 0 1 42%; min-width: 0; }
     .reader-scrubber { flex: 1; min-width: 0; border-top: 0; border-left: 1px solid var(--line); padding-left: 4px; }
 }
-@media (prefers-reduced-motion: reduce) { .reader-tools, .reader-focus .reader-tools { transform: none; } }
 
-@media (prefers-reduced-transparency: reduce) { .reader-tools { background: var(--bg-raised); } }

@@ -7,7 +7,7 @@ import { chaptersOf } from "../ui/chapters.js";
 import { detailUrl, escapeHtml, readerUrl } from "../ui/dom.js";
 import { Comments } from "../ui/comments.js";
 import { RatingEditor } from "../ui/rating.js";
-import { Sheet, isPageScrollLocked } from "../ui/overlay.js";
+import { Sheet, isPageScrollLocked, setPageScrollLockMode } from "../ui/overlay.js";
 import { ReaderViewport } from "../reader/ReaderViewport.js";
 import { icon } from "../ui/icons.js";
 import { renderPageError } from "../ui/states.js";
@@ -16,6 +16,7 @@ import { showToast } from "../ui/toast.js";
 export class ReaderPage {
     async init() {
         mountShell({ chrome: false });
+        setPageScrollLockMode("contain");
         const params = new URLSearchParams(location.search);
         this.chapterId = params.get("id"); this.albumId = params.get("album");
         if (!/^\d+$/.test(this.chapterId || "") || (this.albumId && !/^\d+$/.test(this.albumId))) throw new Error("章节或作品 ID 无效");
