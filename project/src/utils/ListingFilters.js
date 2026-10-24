@@ -5,6 +5,7 @@ export const DEFAULT_LISTING_FILTERS = Object.freeze({
     mainTag: "0",
     subcategorySlug: "",
     hideSerial: false,
+    unratedOnly: false,
 });
 
 const VALID_ORDERS = new Set(["mv", "mr", "tf", "mp"]);
@@ -32,6 +33,7 @@ export function normalizeListingFilters(value = {}) {
         mainTag: String(value.mainTag || "0"),
         subcategorySlug: String(value.subcategorySlug || ""),
         hideSerial: Boolean(value.hideSerial),
+        unratedOnly: Boolean(value.unratedOnly),
     };
 }
 

@@ -1,4 +1,5 @@
 import { jmApi } from "../api/JmcomicApi.js";
+import { localRuntime } from "../local/LocalRuntime.js";
 import { keepSingleChapterComics } from "../utils/ComicChapterFilter.js";
 import { DEFAULT_LISTING_FILTERS, ORDER_LABELS, TIME_LABELS, listingFilterSummary, reconcileListingFilters } from "../utils/ListingFilters.js";
 import { comicCardHtml } from "./comic-card.js";
@@ -15,7 +16,7 @@ const compactQuery = window.matchMedia("(max-width: 699px)");
 const choices = (entries, active) => entries.map(([value, label]) => `<button class="chip" type="button" data-value="${escapeHtml(value)}" aria-pressed="${String(value) === String(active)}">${escapeHtml(label)}</button>`).join("");
 
 /**
- * Order / period / category / sub-category / single-chapter filters.
+ * Order / period / category / sub-category / single-chapter / unrated filters.
  * Inline on iPad and desktop; on iPhone the same node moves into a bottom sheet.
  */
 export class ListingFilterPanel {
@@ -35,8 +36,9 @@ export class ListingFilterPanel {
             <div class="filter-group" data-filter="time"><h3 class="filter-label">时间</h3><div class="chip-row">${choices(Object.entries(TIME_LABELS).map(([key, label]) => [key, key === "a" ? "全部" : label]), this.filters.time)}</div></div>
             <div class="filter-group" data-filter="category"><h3 class="filter-label">主分类</h3><div class="chip-row" data-category-options>${choices([["0", "全部"]], "0")}</div></div>
             <div class="filter-group" data-filter="mainTag" hidden><h3 class="filter-label">副分类</h3><div class="chip-row" data-subcategory-options></div></div>
-            <div class="filter-group filter-group-extra"><h3 class="filter-label">章节</h3><div class="filter-extra">
+            <div class="filter-group filter-group-extra"><h3 class="filter-label">其他</h3><div class="filter-extra">
                 <label class="switch"><input type="checkbox" data-hide-serial /><span class="switch-copy"><strong>只看单章</strong></span></label>
+                <label class="switch"><input type="checkbox" data-unrated-only /><span class="switch-copy"><strong>只看未评分</strong></span></label>
                 <button class="btn btn-ghost btn-sm filter-reset" type="button" data-filter-reset disabled>重置筛选</button>
             </div></div>`;
         this.resetButton = this.panel.querySelector("[data-filter-reset]");
@@ -47,6 +49,10 @@ export class ListingFilterPanel {
         });
         this.panel.querySelector("[data-hide-serial]").addEventListener("change", (event) => {
             this.filters.hideSerial = event.currentTarget.checked;
+            this.emit();
+        });
+        this.panel.querySelector("[data-unrated-only]").addEventListener("change", (event) => {
+            this.filters.unratedOnly = event.currentTarget.checked;
             this.emit();
         });
         this.resetButton.addEventListener("click", () => this.reset());
@@ -124,8 +130,9 @@ export class ListingFilterPanel {
             button.disabled = nonViewOrder && button.dataset.value !== "a";
         });
         this.panel.querySelector("[data-hide-serial]").checked = this.filters.hideSerial;
+        this.panel.querySelector("[data-unrated-only]").checked = this.filters.unratedOnly;
         const changed = ["order", "time", "category", "mainTag"].filter((key) => this.filters[key] !== DEFAULT_LISTING_FILTERS[key]).length
-            + (this.filters.hideSerial ? 1 : 0);
+            + (this.filters.hideSerial ? 1 : 0) + (this.filters.unratedOnly ? 1 : 0);
         const badge = this.toggle?.querySelector("[data-filter-count]");
         if (badge) {
             badge.textContent = String(changed);
@@ -159,6 +166,8 @@ export class ListingResults {
 
     setFilters(filters) {
         this.filters = { ...filters };
+        // Re-read on every filter change so scores given since the last load count.
+        this.ratedIds = null;
         this.comics = [];
         clearTimeout(this.debounce);
         this.feed.reset();
@@ -181,7 +190,7 @@ export class ListingResults {
             // A numeric query may be a JM id: show the exact album first when it exists.
             try {
                 const album = await jmApi.getComicAlbum(query);
-                const direct = await keepSingleChapterComics([album], filters.hideSerial);
+                const direct = await keepSingleChapterComics(await this.dropRated([album], filters), filters.hideSerial);
                 if (isCurrent() && direct[0]?.name) this.append(direct);
             } catch { /* Keyword results below remain authoritative. */ }
         }
@@ -197,21 +206,38 @@ export class ListingResults {
         }
         if (!isCurrent()) return { done: false };
         const content = Array.isArray(list?.content) ? list.content : [];
-        if (filters.hideSerial && content.length) this.state.textContent = "正在核对章节数…";
-        const visible = await keepSingleChapterComics(content, filters.hideSerial);
+        const unrated = await this.dropRated(content, filters);
+        if (!isCurrent()) return { done: false };
+        if (filters.hideSerial && unrated.length) this.state.textContent = "正在核对章节数…";
+        const visible = await keepSingleChapterComics(unrated, filters.hideSerial);
         if (!isCurrent()) return { done: false };
         const total = Number(list?.total || content.length);
         this.maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
         const summary = listingFilterSummary(filters);
         const totalLabel = total.toLocaleString("zh-CN");
-        this.state.textContent = filters.hideSerial
-            ? `${totalLabel} 条候选 · 已加载 ${this.renderedIds.size + visible.length} 个单章 · ${summary}`
+        const kind = [filters.unratedOnly && "未评分", filters.hideSerial && "单章"].filter(Boolean).join("");
+        this.state.textContent = kind
+            ? `${totalLabel} 条候选 · 已加载 ${this.renderedIds.size + visible.length} 部${kind}作品 · ${summary}`
             : `${totalLabel} 部作品 · ${summary}`;
         const added = this.append(visible);
         if (page === 1 && !this.renderedIds.size) {
             this.grid.innerHTML = stateHtml({ title: "没有符合条件的作品", message: "换个关键词，或放宽筛选条件试试。" });
         }
         return { done: !content.length || page >= this.maxPage, count: added };
+    }
+
+    /** Drop comics that already have a local score; the rated ids are fetched once per filter change. */
+    async dropRated(list, filters) {
+        if (!filters.unratedOnly || !list.length) return list;
+        this.ratedIds ||= localRuntime.getRatings().then((ratings) => new Set((ratings || []).map((item) => String(item.id))));
+        let rated;
+        try {
+            rated = await this.ratedIds;
+        } catch (error) {
+            this.ratedIds = null;
+            throw new Error(`本地评分读取失败：${error.message}`);
+        }
+        return list.filter((comic) => !rated.has(String(comic?.id ?? "")));
     }
 
     append(list) {

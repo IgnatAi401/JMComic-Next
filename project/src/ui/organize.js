@@ -10,7 +10,7 @@ const CACHE_KIND = "organize";
 const CACHE_AGE = 7 * 24 * 60 * 60;
 const FILTER_KEYS = ["order", "time", "category", "mainTag", "hideSerial"];
 // Filters that narrow the result set; the sort order only reorders the same set.
-const MATCH_KEYS = ["time", "category", "mainTag", "hideSerial"];
+const MATCH_KEYS = ["time", "category", "mainTag", "hideSerial", "unratedOnly"];
 
 /** Two FNV-1a passes give a short, path-safe cache key for a keyword + filter combination. */
 const hashKey = (text) => {
