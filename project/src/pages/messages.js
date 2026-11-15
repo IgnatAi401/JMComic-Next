@@ -90,8 +90,9 @@ export class MessagesPage {
         const version = ++this.requestVersion;
         const refresh = document.querySelector(".refresh-messages");
         refresh.disabled = true;
+        refresh.classList.add("is-spinning");
         this.moreButton.disabled = true;
-        this.status.textContent = "正在读取账号消息…";
+        this.status.textContent = "读取中…";
         try {
             await authSession.loadLocalConfig();
             if (version !== this.requestVersion) return;
@@ -122,17 +123,18 @@ export class MessagesPage {
                 const container = index === 0 ? this.notificationList : this.trackingList;
                 // Keep a previously loaded panel readable if only its refresh failed.
                 if (!(index === 0 ? this.notificationsLoaded : this.trackingLoaded)) {
-                    container.innerHTML = `<div class="message-empty"><p>${label}暂时无法读取，请点击刷新重试。</p></div>`;
+                    container.innerHTML = `<div class="message-empty"><p>${label}读取失败，点刷新重试</p></div>`;
                 }
             });
-            this.status.textContent = failures.length ? failures.join("；") : "消息与连载追踪已同步";
+            this.status.textContent = failures.length ? failures.join("；") : "已同步";
         } catch (error) {
             if (version !== this.requestVersion) return;
-            this.status.textContent = error.message || "消息暂时无法读取";
+            this.status.textContent = error.message || "读取失败";
             this.renderError();
         } finally {
             if (version === this.requestVersion) {
                 refresh.disabled = false;
+                refresh.classList.remove("is-spinning");
                 this.moreButton.disabled = false;
             }
         }
@@ -145,22 +147,22 @@ export class MessagesPage {
             await this.loadTracking(this.trackingPage + 1, true, version);
         } catch (error) {
             if (version !== this.requestVersion) return;
-            this.status.textContent = error.message || "连载追踪加载失败，请重试";
+            this.status.textContent = error.message || "追更加载失败";
             showToast(this.status.textContent, "warning");
         }
     }
 
     renderConfigGate() {
-        const html = '<div class="message-empty"><p>配置账号密码后，才能读取通知和连载追踪。</p><button class="btn btn-primary message-login" type="button">配置账号</button></div>';
+        const html = '<div class="message-empty"><p>登录后查看通知和追更</p><button class="btn btn-primary message-login" type="button">登录</button></div>';
         this.notificationList.innerHTML = html;
         this.trackingList.innerHTML = html;
-        this.status.textContent = "尚未配置账号";
+        this.status.textContent = "未登录账号";
         this.moreButton.hidden = true;
         this.resetTotals();
     }
 
     renderError() {
-        const html = '<div class="message-empty"><p>暂时无法读取账号消息，请检查账号配置或网络连接。</p></div>';
+        const html = '<div class="message-empty"><p>读取失败，检查账号或网络</p></div>';
         this.notificationList.innerHTML = html;
         this.trackingList.innerHTML = html;
         this.moreButton.hidden = true;

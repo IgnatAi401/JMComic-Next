@@ -1,3 +1,4 @@
+import { authorSubscriptions } from "../data/AuthorSubscriptions.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { libraryStore } from "../data/LibraryStore.js";
@@ -40,6 +41,8 @@ export class ReaderPage {
         document.querySelector(".reader-afterword").hidden = false;
         this.bindLaterRemove();
         libraryStore.recordHistory(this.album, this.chapterId).catch((error) => showToast(`历史保存失败：${error.message}`, "warning"));
+        // 看过就移出作者订阅的更新列表。
+        authorSubscriptions.dismiss(this.album?.id || this.albumId);
     }
 
     bind() {

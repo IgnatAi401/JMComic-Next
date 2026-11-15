@@ -27,8 +27,11 @@ export const comicCardHtml = (comic, { meta = "", footer = "" } = {}) => {
             <p class="comic-meta"><span data-detail="authors">${preferenceAuthorsHtml(authorsOf(comic), undefined, { link: true, limit: CARD_AUTHORS })}</span>${category ? ` · ${escapeHtml(category)}` : ""}</p>
             ${meta ? `<p class="comic-meta rich-note">${escapeHtml(meta)}</p>` : ""}
             <div class="tag-list rich-tags" data-detail="tags" aria-live="polite"></div>
-            <dl class="rich-stats">${RICH_STATS.map(([key, label, glyph]) => `<div title="${label}"><dt class="visually-hidden">${label}</dt>${glyph ? icon(glyph) : ""}<dd class="num" data-detail="${key}">—</dd></div>`).join("")}</dl>
-            ${footer}
+            <dl class="rich-stats">${RICH_STATS.map(([key, label, glyph]) => {
+                const stat = `<div title="${label}"><dt class="visually-hidden">${label}</dt>${glyph ? icon(glyph) : ""}<dd class="num" data-detail="${key}">—</dd></div>`;
+                // 卡片操作按钮和日期同一行、靠右，不额外占一行把卡片撑高。
+                return key === "date" && footer ? `<div class="rich-stats-end">${stat}${footer}</div>` : stat;
+            }).join("")}</dl>
         </div>
         ${id ? watchLaterButtonHtml(comic, { compact: true }) : ""}
     </article>`;

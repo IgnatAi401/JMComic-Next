@@ -1,3 +1,4 @@
+import { subscribeButtonHtml } from "../ui/subscriptions.js";
 import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
 import { localRuntime } from "../local/LocalRuntime.js";
@@ -15,6 +16,7 @@ import { RatingEditor } from "../ui/rating.js";
 import { PagePreview } from "../ui/page-preview.js";
 import { AUTHOR_LEVELS, TAG_LEVELS, loadPreferences, nextLevel, preferenceAuthorsHtml, preferenceMaps, preferenceTagsHtml } from "../ui/preferences.js";
 import { icon } from "../ui/icons.js";
+import { Sheet } from "../ui/overlay.js";
 import { renderPageError } from "../ui/states.js";
 import { showToast } from "../ui/toast.js";
 import { watchLaterButtonHtml } from "../ui/watch-later.js";
@@ -66,7 +68,7 @@ class ChapterPage {
             <div class="detail-cover">${coverHtml(album, { eager: true })}</div>
             <div class="detail-copy"><p class="eyebrow">JM ${escapeHtml(album.id)} · ${this.chapters.length > 1 ? "系列作品" : "单篇作品"}</p>
                 <h1 class="detail-title">${escapeHtml(album.name)}</h1>
-                <div class="detail-byline"><span class="detail-authors is-folded"></span><span class="detail-byline-actions"><button class="btn btn-ghost btn-sm" type="button" data-manage-preferences aria-pressed="false">${icon("sliders")}<span>管理偏好</span></button><button class="btn btn-ghost btn-sm" type="button" data-translate aria-pressed="false">${icon("translate")}<span>翻译标题</span></button></span></div>
+                <div class="detail-byline"><span class="detail-authors is-folded"></span><span class="detail-byline-actions"><button class="btn btn-ghost btn-sm" type="button" data-manage-preferences aria-pressed="false">${icon("sliders")}<span>管理偏好</span></button><button class="btn btn-ghost btn-sm" type="button" data-translate aria-pressed="false">${icon("translate")}<span>翻译标题</span></button>${this.subscribeHtml()}</span></div>
                 <div class="tag-list detail-tags">${preferenceTagsHtml(album.tags)}</div>
                 <button class="detail-fold" type="button" data-fold-tags aria-expanded="false" hidden>展开全部标签</button>
                 ${asText(album.description) ? `<p class="detail-description">${escapeHtml(asText(album.description))}</p>` : ""}
@@ -89,6 +91,7 @@ class ChapterPage {
 
     bind() {
         this.root.querySelector("[data-translate]").onclick = () => this.translate();
+        this.root.querySelector("[data-pick-subscriptions]")?.addEventListener("click", (event) => this.openSubscriptions(event.currentTarget));
         this.root.querySelector("[data-manage-preferences]").onclick = () => this.toggleManaging();
         this.root.querySelector("[data-fold-tags]").onclick = () => this.setTagsExpanded(!this.tagsExpanded);
         this.root.querySelector("[data-fold-chapters]").onclick = () => this.setChaptersExpanded(!this.chaptersExpanded, { scroll: true });
@@ -111,6 +114,23 @@ class ChapterPage {
             if (target) this.cyclePreference(target.dataset.managePreference, target.dataset.name);
         });
         this.root.querySelectorAll("[data-account-action]").forEach((button) => { button.onclick = () => this.accountAction(button); });
+    }
+
+    /** 一位作者直接显示订阅开关；多位作者时打开列表逐个选择。 */
+    subscribeHtml() {
+        const authors = [...new Set(authorsOf(this.album))];
+        if (!authors.length) return "";
+        if (authors.length === 1) return subscribeButtonHtml(authors[0], { className: "btn btn-ghost btn-sm" });
+        return `<button class="btn btn-ghost btn-sm" type="button" data-pick-subscriptions aria-haspopup="dialog">${icon("subscribe")}<span>订阅作者</span></button>`;
+    }
+
+    openSubscriptions(opener) {
+        if (!this.subscriptionSheet) {
+            this.subscriptionSheet = new Sheet({ name: "subscribe-authors", title: "订阅作者" });
+            this.subscriptionSheet.body.innerHTML = `<p class="sheet-note">每天检查新作，显示在“作者订阅”页</p>
+                <div class="chip-row subscribe-picker">${[...new Set(authorsOf(this.album))].map((name) => subscribeButtonHtml(name, { compact: true, className: "chip" })).join("")}</div>`;
+        }
+        this.subscriptionSheet.open({ opener });
     }
 
     renderPreferences() {

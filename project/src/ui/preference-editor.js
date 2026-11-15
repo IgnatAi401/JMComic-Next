@@ -94,7 +94,9 @@ export class PreferenceEditor {
         this.busy = true;
         this.root.setAttribute("aria-busy", "true");
         try {
-            const preferences = preferenceMaps(await localRuntime.savePreference(value));
+            const data = await localRuntime.savePreference(value);
+            const preferences = preferenceMaps(data);
+            window.dispatchEvent(new CustomEvent("jm-preferences-change", { detail: data }));
             this.render(this.kind === "tag" ? preferences.tags : preferences.authors);
             this.status(message);
             return true;

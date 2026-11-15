@@ -3,6 +3,7 @@ import { localRuntime } from "../local/LocalRuntime.js";
 import { mountShell } from "../ui/shell.js";
 import { mountReadingControls } from "../ui/reading-controls.js";
 import { PreferenceEditor } from "../ui/preference-editor.js";
+import { SubscriptionEditor } from "../ui/subscriptions.js";
 import { AUTHOR_LEVELS, TAG_LEVELS, preferenceMaps } from "../ui/preferences.js";
 
 mountShell();
@@ -21,3 +22,7 @@ localRuntime.getPreferences().then((data) => {
     editors[0].render(tags);
     editors[1].render(authors);
 }).catch((error) => editors.forEach((editor) => editor.status(`偏好读取失败：${error.message}`)));
+
+new SubscriptionEditor(document.querySelector("#settings-subscription-list")).mount();
+// 从作者更新页的“在设置中管理”进来时滚到订阅区。
+if (location.hash === "#settings-subscriptions") document.querySelector(location.hash)?.scrollIntoView({ block: "start" });

@@ -7,6 +7,14 @@ import { listingApiOrder, listingCategoryPath, normalizeListingFilters } from ".
 // Check-in rewards appear as "Jcoin:10 EXP:10" or "[EXP:10] [COIN:2]".
 const DAILY_REWARD_PATTERN = /\[?\s*(J?COINS?|EXP)\s*[:：]\s*(\d+)\s*\]?/gi;
 
+/* A browser-direct API line itself failed (blocked, reset, timed out, refused or broken), not the request. */
+const isLineFailure = (error) => error?.name === "AbortError"
+    || error instanceof TypeError
+    || error?.status === 403
+    || error?.status === 429
+    || error?.status >= 500
+    || error?.lineFailure === true;
+
 const normalizeFavoriteFolders = (list) => list
     .map((folder) => ({ id: String(folder?.FID ?? folder?.id ?? ""), name: String(folder?.name ?? "").trim() }))
     .filter((folder) => folder.id && folder.id !== "0");
@@ -31,6 +39,10 @@ class JmcomicApi {
     bootstrapFromCache = false;
     bootstrapMaxAge = 6 * 60 * 60 * 1000;
     bootstrapStorageKey = "jm_api_bootstrap_v1";
+    // Lines that recently failed on this browser's network are tried last, so requests that
+    // only try one or two lines (cards, random pick) skip lines this network blocks.
+    lineFailureStorageKey = "jm_api_line_failures_v1";
+    lineFailureTtl = 30 * 60 * 1000;
 
     imgServers = [
         "cdn-msp.jmapiproxy1.cc",
@@ -56,6 +68,36 @@ class JmcomicApi {
         } catch {
             return [];
         }
+    }
+
+    readLineFailures() {
+        try {
+            const stored = JSON.parse(readLocalStorage(this.lineFailureStorageKey, "null"));
+            const now = Date.now();
+            return Object.fromEntries(Object.entries(stored && typeof stored === "object" ? stored : {})
+                .filter(([, failedAt]) => now - Number(failedAt) < this.lineFailureTtl));
+        } catch {
+            return {};
+        }
+    }
+
+    markLine(server, failed) {
+        if (!server) return;
+        const failures = this.readLineFailures();
+        if (failed) failures[server] = Date.now();
+        else if (server in failures) delete failures[server];
+        else return;
+        if (Object.keys(failures).length) writeLocalStorage(this.lineFailureStorageKey, JSON.stringify(failures));
+        else removeLocalStorage(this.lineFailureStorageKey);
+    }
+
+    /** Lines in bootstrap order, recently failed ones last (longest-ago failure first). */
+    orderedServers() {
+        const failures = this.readLineFailures();
+        const healthy = this.servers.filter((server) => !(server in failures));
+        const failed = this.servers.filter((server) => server in failures)
+            .sort((a, b) => failures[a] - failures[b]);
+        return [...healthy, ...failed];
     }
 
     saveBootstrap(servers) {
@@ -164,7 +206,7 @@ class JmcomicApi {
         timeoutMs = 12000,
     } = {}) {
         await this.init();
-        const candidates = authenticated ? [null] : this.servers.slice(0, Math.max(1, Math.min(5, Number(maxServers) || 5)));
+        const candidates = authenticated ? [null] : this.orderedServers().slice(0, Math.max(1, Math.min(5, Number(maxServers) || 5)));
         let lastError;
         const readResponse = async (response) => {
             let payload;
@@ -174,7 +216,7 @@ class JmcomicApi {
                     : await response.json();
             } catch (error) {
                 if (error?.name === "AbortError") throw error;
-                if (response.ok) throw new Error("当前 API 线路返回了无效数据");
+                if (response.ok) throw Object.assign(new Error("当前 API 线路返回了无效数据"), { lineFailure: true });
                 payload = {};
             }
             if (!response.ok) {
@@ -222,6 +264,7 @@ class JmcomicApi {
                 if (validate && !validate(result)) {
                     throw new Error("当前 API 线路返回了空数据");
                 }
+                if (!authenticated) this.markLine(server, false);
                 let responseServer = server;
                 if (!authenticated && response.url) {
                     try { responseServer = new URL(response.url).hostname || server; } catch {}
@@ -238,6 +281,7 @@ class JmcomicApi {
             } catch (error) {
                 lastError = error;
                 if (authenticated) break;
+                if (isLineFailure(error)) this.markLine(server, true);
             }
         }
         if (!authenticated && retryBootstrap && this.bootstrapFromCache) {

@@ -2,6 +2,7 @@ import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
 import { autoCheckIn } from "../auth/AutoCheckIn.js";
 import { setting } from "../core/Setting.js";
+import { authorSubscriptions } from "../data/AuthorSubscriptions.js";
 import { openInNewPage } from "../utils/NavigationPolicy.js";
 import { AccountPanel } from "./account.js";
 import { escapeHtml, pageName, searchUrl } from "./dom.js";
@@ -19,7 +20,8 @@ const PRIMARY = [
 ];
 const PERSONAL = [
     { page: "library", label: "书架", rail: "书架", icon: "library" },
-    { page: "messages", label: "消息与追更", rail: "消息", icon: "messages", badge: true },
+    { page: "subscriptions", label: "作者订阅", rail: "订阅", icon: "subscribe" },
+    { page: "messages", label: "消息与追更", rail: "消息", icon: "messages", badge: "unread" },
 ];
 const MENU_HANDOFF_MS = 200;
 const HOT_TAGS = ["巨乳", "乳汁", "修女", "催眠", "女仆", "怪物女孩", "常识改变"];
@@ -27,7 +29,7 @@ const HOT_TAGS = ["巨乳", "乳汁", "修女", "催眠", "女仆", "怪物女�
 const navLink = (item, current) => `
     <a class="nav-item" href="./${item.page}.html"${item.page === current ? ' aria-current="page"' : ""} aria-label="${item.label}">
         ${icon(item.icon)}<span class="nav-item-label">${item.label}</span><span class="nav-item-short" aria-hidden="true">${item.rail}</span>
-        ${item.badge ? '<b class="badge nav-badge" data-unread hidden>0</b>' : ""}
+        ${item.badge ? `<b class="badge nav-badge" data-${item.badge} hidden>0</b>` : ""}
     </a>`;
 
 class AppShell {
@@ -56,6 +58,7 @@ class AppShell {
                 .catch(() => this.renderAccount());
         }
         this.scheduleAutoCheckIn();
+        this.scheduleSubscriptionCheck();
         return this;
     }
 
@@ -246,6 +249,7 @@ class AppShell {
                     <div class="action-grid">
                         ${tile("latest", "最新更新", "latest")}
                         ${tile("library", "书架", "library")}
+                        ${tile("subscriptions", "作者订阅", "subscribe")}
                         ${tile("messages", "消息与追更", "messages", '<b class="badge" data-unread hidden>0</b>')}
                         <button class="action-tile" type="button" data-checkin>${icon("checkin")}<span data-checkin-label>每日签到</span></button>
                         ${tile("setting", "设置", "settings")}
@@ -313,6 +317,15 @@ class AppShell {
         }).catch(() => {});
         if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 3000 });
         else setTimeout(run, 1000);
+    }
+
+    /** 每天一次的作者订阅检查：页面空闲后在后台进行，有新作时提示一次。 */
+    scheduleSubscriptionCheck() {
+        const run = () => authorSubscriptions.runDue().then((result) => {
+            if (result?.added) showToast(`作者订阅：发现 ${result.added} 部新作`, "success");
+        }).catch(() => {});
+        if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 5000 });
+        else setTimeout(run, 2000);
     }
 
     async checkIn({ auto = false } = {}) {

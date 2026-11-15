@@ -12,7 +12,15 @@
 </head>
 <body data-page="messages" class="">
     <a class="skip-link" href="#main">跳到主要内容</a>
-    <main class="app-main" id="main" tabindex="-1"><div class="page messages-page"><header class="page-head"><div class="page-head-copy"><h1 class="page-title">消息与追更</h1><p class="page-lede message-status" role="status">正在读取账号消息…</p></div><button type="button" class="btn btn-outline btn-sm refresh-messages">刷新</button></header><nav class="segmented is-block messages-tabs" aria-label="消息视图"><button type="button" data-messages-tab="notifications" aria-pressed="true">通知<span class="tab-count notification-total">0</span></button><button type="button" data-messages-tab="tracking" aria-pressed="false">正在追更<span class="tab-count tracking-total">0</span></button></nav><div class="messages-layout" data-tab="notifications"><section class="section notification-section"><div class="section-head"><h2 class="section-title">通知</h2><span class="section-meta notification-total">0</span></div><div class="notification-list"></div></section><section class="section tracking-section"><div class="section-head"><h2 class="section-title">正在追更</h2><span class="section-meta tracking-total">0</span></div><div class="tracking-list"></div><div class="feed-footer"><button class="btn btn-outline tracking-more" type="button" hidden>加载更多连载</button></div></section></div></div></main>
+    <main class="app-main" id="main" tabindex="-1"><div class="page messages-page">
+        <header class="page-head is-compact"><h1 class="page-title">消息与追更</h1></header>
+        <nav class="view-tabs messages-tabs" aria-label="消息视图"><button type="button" data-messages-tab="notifications" aria-pressed="true">通知<span class="tab-count notification-total">0</span></button><button type="button" data-messages-tab="tracking" aria-pressed="false">正在追更<span class="tab-count tracking-total">0</span></button></nav>
+        <div class="list-toolbar">
+            <span class="toolbar-status message-status" role="status">读取中…</span>
+            <div class="toolbar-actions"><button type="button" class="icon-btn refresh-messages" aria-label="刷新" title="刷新"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.7-4.4L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.7 4.4L20 16"/><path d="M20 20v-4h-4"/></svg></button></div>
+        </div>
+        <div class="messages-layout" data-tab="notifications"><section class="section notification-section"><div class="section-head"><h2 class="section-title">通知</h2><span class="section-meta notification-total">0</span></div><div class="notification-list"></div></section><section class="section tracking-section"><div class="section-head"><h2 class="section-title">正在追更</h2><span class="section-meta tracking-total">0</span></div><div class="tracking-list"></div><div class="feed-footer"><button class="btn btn-outline tracking-more" type="button" hidden>加载更多</button></div></section></div>
+    </div></main>
     <script type="module" src="./src/pages/messages.js"></script>
 </body>
 </html>
