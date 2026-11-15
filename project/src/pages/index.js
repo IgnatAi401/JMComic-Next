@@ -1,5 +1,6 @@
 import { jmApi } from "../api/JmcomicApi.js";
 import { authSession } from "../auth/AuthSession.js";
+import { authorSubscriptions } from "../data/AuthorSubscriptions.js";
 import { libraryStore } from "../data/LibraryStore.js";
 import { comicCardHtml } from "../ui/comic-card.js";
 import { coverHtml, hydrateCovers } from "../ui/covers.js";
@@ -334,6 +335,14 @@ function renderWatchLater() {
     renderSideList(document.querySelector(".continue.later"), libraryStore.getWatchLater().slice(0, 8), { removable: true });
 }
 
+function renderAuthorUpdates() {
+    // 标题匹配的作品作者字段对不上，改为显示是哪位订阅作者。
+    const items = authorSubscriptions.updates.slice(0, 8).map((item) => (item.via === "title" ? { ...item, author: item.sources } : item));
+    renderSideList(document.querySelector(".continue.author-updates"), items, {
+        meta: (item) => `${formatDateTime(item.foundAt)} 发现`,
+    });
+}
+
 function bindWatchLater() {
     const section = document.querySelector(".continue.later");
     section.addEventListener("click", async (event) => {
@@ -352,6 +361,7 @@ function bindWatchLater() {
         renderTracking();
         renderContinueReading();
     });
+    window.addEventListener("jm-subscriptions-change", renderAuthorUpdates);
 }
 
 const cleanLabel = (value) => String(value || "").replace(/[→>-]*右滑看更多[→>-]*/gi, "").replace(/\s+/g, " ").trim();
@@ -402,6 +412,7 @@ class HomePage {
         document.querySelector("[data-today]").textContent = new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
         await jmApi.init();
         bindWatchLater();
+        renderAuthorUpdates();
         bindTracking();
         loadTracking();
         const random = new RandomPick(document.querySelector(".random"));

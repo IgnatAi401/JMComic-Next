@@ -1323,6 +1323,12 @@ a.cover:active { transform: scale(0.98); }
         background: inherit;
         pointer-events: none;
     }
+    /* 打开面板时 body 被固定住，键盘弹出后 Safari 用 body 的背景色填充面板以下的区域
+     * （延伸块画不到那里），默认是页面底色，看起来是一片黑。输入时把 body 的背景色
+     * 换成面板色，再叠一层页面底色的渐变，页面本身看起来不变，只改 Safari 取到的颜色。 */
+    body:has(> .sheet.is-open:not(.navigation-drawer) :is(input, textarea):focus) {
+        background: linear-gradient(var(--bg), var(--bg)) var(--elevated);
+    }
 }
 .sheet-panel {
     position: relative;
