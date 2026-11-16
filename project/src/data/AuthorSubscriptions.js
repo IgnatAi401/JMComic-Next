@@ -1,14 +1,18 @@
 import { jmApi } from "../api/JmcomicApi.js";
+import { localRuntime } from "../local/LocalRuntime.js";
 import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
 
 /**
- * 作者订阅：只用浏览器存储和公开的搜索接口，前端独立完成，便于移植到纯静态版本。
+ * 作者订阅：检查新作仍在前端用公开的搜索接口完成；订阅数据存在服务器的资料库里，
+ * 换设备、换访问地址都是同一份（纯前端的 Web 版仍存浏览器）。
  *
  * 判断新作：搜索结果按发布时间排序，但编号并不严格递增（补档的旧作会拿到新编号），
  * 所以同时看两条线索——更新时间晚于上次检查（留出收录延迟的余量），或编号大于见过的最大编号；
  * 再用“见过的编号”去重，同一部作品不会被反复加入。
  */
-const STORE_KEY = "jm_author_subscriptions_v1";
+const API_PATH = "./local-api/library/subscriptions";
+/* 同一浏览器的其他标签页保存后写这个键，借 storage 事件通知本页重新读取。 */
+const SYNC_KEY = "jm_author_subscriptions_sync";
 const LOCK_KEY = "jm_author_subscriptions_lock";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
@@ -18,6 +22,7 @@ const LOCK_MS = 5 * 60 * 1000;
 const REQUEST_GAP_MS = 1500;
 const MAX_PAGES = 3;
 const MAX_SEEN = 400;
+const SAVE_RETRY_MS = [2000, 5000, 15000, 60000];
 
 const now = () => Date.now();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,20 +74,17 @@ function guessAlias(content, rejected) {
 
 const emptyState = () => ({ version: 1, authors: [], updates: [], lastRunAt: 0, fuzzy: true });
 
-function readState() {
-    try {
-        const value = JSON.parse(readLocalStorage(STORE_KEY, "null"));
-        if (!value || typeof value !== "object") return emptyState();
-        return {
-            version: 1,
-            authors: Array.isArray(value.authors) ? value.authors.filter((item) => item?.name) : [],
-            updates: Array.isArray(value.updates) ? value.updates.filter((item) => item?.id) : [],
-            lastRunAt: Number(value.lastRunAt) || 0,
-            fuzzy: value.fuzzy !== false,
-        };
-    } catch {
-        return emptyState();
-    }
+/** 服务器返回的文档可能为空（还没订阅过），统一成完整结构；同时深拷贝，避免改到原对象。 */
+function normalizeState(value) {
+    if (!value || typeof value !== "object") return emptyState();
+    const copy = JSON.parse(JSON.stringify(value));
+    return {
+        version: 1,
+        authors: Array.isArray(copy.authors) ? copy.authors.filter((item) => item?.name) : [],
+        updates: Array.isArray(copy.updates) ? copy.updates.filter((item) => item?.id) : [],
+        lastRunAt: Number(copy.lastRunAt) || 0,
+        fuzzy: copy.fuzzy !== false,
+    };
 }
 
 const comicFromSearch = (item, source, foundAt, via) => ({
@@ -96,20 +98,113 @@ const comicFromSearch = (item, source, foundAt, via) => ({
     ...(via === "title" ? { via } : {}),
 });
 
+/**
+ * 改动先在本地生效（界面立即更新），再排队保存到服务器。保存时带上读到的版本号；
+ * 如果其他设备或标签页先存了，服务器会退回最新数据，这里把尚未保存的改动在它上面重放一遍再存，
+ * 两边的改动都不会丢。
+ */
 class AuthorSubscriptions {
     running = null;
     progress = null;
+    /** 最近一次保存失败的原因；保存成功后清空。 */
+    saveError = "";
+    #state = emptyState();
+    #revision = 0;
+    #loading = null;
+    #loaded = false;
+    #pending = [];
+    #saving = null;
+    #retryTimer = 0;
+    #failures = 0;
 
     constructor() {
-        if (typeof window !== "undefined") {
-            // 其他标签页改动后同步刷新。
-            window.addEventListener("storage", (event) => {
-                if (event.key === STORE_KEY) this.#notify();
+        if (typeof window === "undefined") return;
+        window.addEventListener("storage", (event) => {
+            if (event.key === SYNC_KEY) this.refresh().catch(() => {});
+        });
+        // 切回页面时重新读取，拿到其他设备的改动。
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") this.refresh().catch(() => {});
+        });
+        this.ready().catch(() => {});
+    }
+
+    /** 第一次从服务器读取订阅；失败后下次调用会重试。 */
+    ready() {
+        if (this.#loaded) return Promise.resolve();
+        if (!this.#loading) {
+            this.#loading = this.#fetch().finally(() => { this.#loading = null; });
+        }
+        return this.#loading;
+    }
+
+    /** 重新读取服务器数据；有未保存的改动时交给保存流程合并。 */
+    async refresh() {
+        if (!this.#loaded) return this.ready();
+        if (this.#pending.length || this.#saving) return;
+        await this.#fetch();
+    }
+
+    async #fetch() {
+        const result = await localRuntime.request(API_PATH);
+        if (this.#loaded && (this.#pending.length || this.#saving || result.revision <= this.#revision)) return;
+        this.#revision = Number(result.revision) || 0;
+        this.#rebase(result.state);
+        this.#loaded = true;
+        this.#notify();
+    }
+
+    /** 以服务器数据为底，重放尚未保存的改动。 */
+    #rebase(serverState) {
+        const state = normalizeState(serverState);
+        for (const mutator of this.#pending) {
+            try { mutator(state); } catch { /* 在新数据上已不适用的改动（如作者已被别处删除）直接略过 */ }
+        }
+        this.#state = state;
+    }
+
+    #save() {
+        clearTimeout(this.#retryTimer);
+        if (this.#saving) return this.#saving;
+        this.#saving = this.#flush()
+            .then(() => {
+                this.#failures = 0;
+                this.saveError = "";
+            }, (error) => {
+                this.saveError = error?.message || "订阅保存失败";
+                const delay = SAVE_RETRY_MS[Math.min(this.#failures, SAVE_RETRY_MS.length - 1)];
+                this.#failures += 1;
+                this.#retryTimer = setTimeout(() => this.#save(), delay);
+                console.warn("作者订阅保存失败，稍后重试", error);
+            })
+            .finally(() => {
+                this.#saving = null;
+                this.#notify();
             });
+        return this.#saving;
+    }
+
+    async #flush() {
+        await this.ready();
+        while (this.#pending.length) {
+            const count = this.#pending.length;
+            const result = await localRuntime.request(API_PATH, {
+                method: "POST",
+                body: { state: this.#state, revision: this.#revision },
+                timeoutMs: 15000,
+            });
+            this.#revision = Number(result.revision) || 0;
+            if (result.conflict) {
+                this.#rebase(result.state);
+                this.#notify();
+                continue;
+            }
+            this.#pending.splice(0, count);
+            writeLocalStorage(SYNC_KEY, String(this.#revision));
         }
     }
 
-    get state() { return readState(); }
+    get state() { return this.#state; }
     get authors() { return this.state.authors; }
     get updates() { return this.state.updates; }
     get lastRunAt() { return this.state.lastRunAt; }
@@ -162,12 +257,12 @@ class AuthorSubscriptions {
 
     isSubscribed(name) { return Boolean(this.find(name)); }
 
-    /** 读出最新状态、修改、写回；每次都重新读取，避免覆盖其他标签页的改动。 */
+    /** 在本地数据上修改并立即通知界面，再排队保存到服务器；mutator 需可重放（冲突时会在新数据上再跑一次）。 */
     #update(mutator) {
-        const state = readState();
-        const result = mutator(state);
-        if (!writeLocalStorage(STORE_KEY, JSON.stringify(state))) throw new Error("浏览器存储已满或不可用，订阅未保存");
+        const result = mutator(this.#state);
+        this.#pending.push(mutator);
         this.#notify();
+        this.#save();
         return result;
     }
 
@@ -225,7 +320,7 @@ class AuthorSubscriptions {
     clearUpdates() { this.#update((state) => { state.updates = []; }); }
 
     /** 待检查的作者：还没建立基准，或距上次检查超过一天（失败后至少隔一小时再试）。 */
-    dueAuthors(state = readState()) {
+    dueAuthors(state = this.#state) {
         const time = now();
         return state.authors.filter((item) => {
             if (item.failedAt && time - item.failedAt < RETRY_AFTER_FAILURE_MS) return false;
@@ -234,13 +329,17 @@ class AuthorSubscriptions {
     }
 
     /** 每天自动检查：只查到期的作者，多个标签页同时打开时只有一个在查。 */
-    runDue() {
+    async runDue() {
+        await this.ready();
         const names = this.dueAuthors().map((item) => item.name);
-        return names.length ? this.check(names, { auto: true }) : Promise.resolve({ added: 0, failed: [], checked: 0 });
+        return names.length ? this.check(names, { auto: true }) : { added: 0, failed: [], checked: 0 };
     }
 
     /** 手动检查全部作者。 */
-    checkAll() { return this.check(this.authors.map((item) => item.name)); }
+    async checkAll() {
+        await this.ready();
+        return this.check(this.authors.map((item) => item.name));
+    }
 
     check(names, { auto = false } = {}) {
         if (this.running) return this.running;

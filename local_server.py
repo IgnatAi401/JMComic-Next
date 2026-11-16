@@ -730,6 +730,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/search-history":
             self.send_json(library.search_history())
             return
+        if parsed.path == "/local-api/library/subscriptions":
+            self.send_json(library.author_subscriptions())
+            return
         if parsed.path == "/local-api/account":
             account = read_account()
             session_state = jm_session.snapshot()
@@ -806,6 +809,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/search-history":
             try:
                 self.send_json(library.search_history(body.get("query")))
+            except LibraryError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/library/subscriptions":
+            try:
+                self.send_json(library.author_subscriptions(body.get("state"), body.get("revision")))
             except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return

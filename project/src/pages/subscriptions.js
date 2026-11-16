@@ -88,7 +88,7 @@ class SubscriptionsPage {
         const author = this.author;
         const updates = authorSubscriptions.updates.filter((item) => !author || item.sources.includes(author));
         // 只在列表真正变化时重绘，检查进度刷新时卡片不闪。
-        const signature = updates.map((item) => `${item.id}:${item.sources.join(",")}:${item.via || ""}`).join("|") + `#${author}`;
+        const signature = updates.map((item) => `${item.id}:${item.sources.join(",")}:${item.via || ""}`).join("|") + `#${author}#${authorSubscriptions.authors.length ? 1 : 0}`;
         if (signature === this.renderedUpdates && this.grid.childElementCount) return;
         this.renderedUpdates = signature;
         if (!updates.length) {

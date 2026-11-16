@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Durable local library: reading/random/watch-later history, search history, ratings and tag/author preferences."""
+"""Durable local library: reading/random/watch-later history, search history, ratings, tag/author preferences
+and author subscriptions."""
 
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ PREFERENCE_LEVELS = {
 }
 MAX_PREFERENCES_PER_KIND = 1000
 MAX_SEARCH_HISTORY = 50
+MAX_SUBSCRIPTIONS_BYTES = 2_500_000
 COMIC_ID = re.compile(r"\d{1,16}")
 PREFERENCE_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,80}")
 
@@ -142,6 +144,12 @@ class LocalLibrary:
                     query TEXT PRIMARY KEY,
                     saved_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS author_subscriptions (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    revision INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
         try:
@@ -221,6 +229,37 @@ class LocalLibrary:
                 "SELECT query,saved_at FROM search_history ORDER BY saved_at DESC LIMIT ?", (MAX_SEARCH_HISTORY,),
             ).fetchall()
         return {"items": [{"query": row["query"], "savedAt": row["saved_at"]} for row in rows]}
+
+    def author_subscriptions(self, state=None, revision=None) -> dict:
+        """The subscription document the browser maintains, versioned by `revision`.
+
+        A write must name the revision it was based on; if another device saved in between, nothing is
+        written and the current document comes back with `conflict: true` so the client can replay its
+        changes on top of it.
+        """
+        with self.lock, self._connection() as connection:
+            row = connection.execute("SELECT revision,payload FROM author_subscriptions WHERE id=1").fetchone()
+            current_revision = row["revision"] if row else 0
+            current = json.loads(row["payload"]) if row else None
+            if state is None:
+                return {"state": current, "revision": current_revision}
+            if isinstance(revision, bool) or not isinstance(revision, int):
+                raise LibraryError("订阅版本号无效")
+            if (not isinstance(state, dict) or not isinstance(state.get("authors"), list)
+                    or not isinstance(state.get("updates"), list)):
+                raise LibraryError("订阅数据格式无效")
+            if revision != current_revision:
+                return {"state": current, "revision": current_revision, "conflict": True}
+            payload = json.dumps(state, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            if len(payload.encode("utf-8")) > MAX_SUBSCRIPTIONS_BYTES:
+                raise LibraryError("订阅数据过大")
+            connection.execute(
+                "INSERT INTO author_subscriptions(id,revision,payload,updated_at) VALUES(1,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,"
+                "updated_at=excluded.updated_at",
+                (current_revision + 1, payload, int(time.time())),
+            )
+        return {"state": state, "revision": current_revision + 1}
 
     @staticmethod
     def _rating_from_row(row: sqlite3.Row) -> dict:

@@ -161,6 +161,11 @@ export class SubscriptionEditor {
         const button = this.form.querySelector("[data-check-all]");
         button.disabled = authorSubscriptions.isRunning || !authors.length;
         button.textContent = progress ? `检查中 ${progress.index}/${progress.total}` : "检查更新";
+        // 保存到服务器失败时提示；恢复后清掉这条提示，不影响其他状态文字。
+        const saveError = authorSubscriptions.saveError;
+        if (saveError && saveError !== this.shownSaveError) this.status(`订阅未保存到服务器（${saveError}），稍后自动重试`);
+        else if (!saveError && this.shownSaveError) this.status("订阅已保存");
+        this.shownSaveError = saveError;
         this.root.querySelector(".subscription-groups").innerHTML = groups.map(([level, label]) => {
             const items = authors.filter((author) => (this.preferences.get(author.name) || "") === level);
             if (!items.length) return "";
