@@ -53,6 +53,7 @@ class ChapterPage {
         new RatingEditor(this.root.querySelector(".rating-editor"), album).mount();
         new Comments(this.root.querySelector(".detail-comments"), id, { total: album.comment_total }).mount();
         this.hydrateNames();
+        this.refreshAlbum();
         this.refreshAccount();
         window.addEventListener("jm-auth-change", () => {
             const key = authSession.isConfigured ? String(authSession.user?.uid || authSession.configuredUsername) : "";
@@ -72,12 +73,12 @@ class ChapterPage {
                 <div class="tag-list detail-tags">${preferenceTagsHtml(album.tags)}</div>
                 <button class="detail-fold" type="button" data-fold-tags aria-expanded="false" hidden>展开全部标签</button>
                 ${asText(album.description) ? `<p class="detail-description">${escapeHtml(asText(album.description))}</p>` : ""}
-                <dl class="detail-stats"><div><dt>章节</dt><dd>${this.chapters.length}</dd></div><div><dt>页数</dt><dd>${escapeHtml(album.total_photos ?? "—")}</dd></div><div><dt>观看</dt><dd>${formatCount(album.total_views)}</dd></div><div><dt>喜欢</dt><dd>${formatCount(album.likes)}</dd></div></dl>
+                <dl class="detail-stats"><div><dt>章节</dt><dd data-chapter-count>${this.chapters.length}</dd></div><div><dt>页数</dt><dd>${escapeHtml(album.total_photos ?? "—")}</dd></div><div><dt>观看</dt><dd>${formatCount(album.total_views)}</dd></div><div><dt>喜欢</dt><dd>${formatCount(album.likes)}</dd></div></dl>
                 <div class="detail-actions"><a class="btn btn-primary" data-start-read data-navigation="same-tab">${icon("play")}<span>开始阅读</span></a><div class="detail-toggles">${watchLaterButtonHtml(album)}<button class="btn btn-outline" data-account-action="favorite" type="button" aria-pressed="false">${icon("bookmark")}<span>收藏</span></button><button class="btn btn-outline" data-account-action="like" type="button" aria-pressed="false">${icon("heart")}<span>喜欢</span></button>${this.chapters.length > 1 ? `<button class="btn btn-outline" data-account-action="track" type="button" aria-pressed="false">${icon("track")}<span>追踪连载</span></button>` : ""}</div></div>
             </div></header>
             <div class="detail-layout"><div class="detail-primary">
                 <section class="section detail-preview" aria-labelledby="preview-title"><div class="section-head"><h2 class="section-title" id="preview-title">内容预览</h2><span class="section-meta" data-preview-meta></span></div><div class="preview-strip" data-navigation-scope="same-tab"><span class="preview-page" data-state="loading"></span><span class="preview-page" data-state="loading"></span><span class="preview-page" data-state="loading"></span></div></section>
-                <section class="section"><div class="section-head"><h2 class="section-title">目录</h2><span class="section-meta">${this.chapters.length} 章</span></div><div class="chapter-list" data-navigation-scope="same-tab"></div><button class="detail-fold chapter-fold" type="button" data-fold-chapters aria-expanded="false" hidden>显示全部 ${this.chapters.length} 章</button></section>
+                <section class="section"><div class="section-head"><h2 class="section-title">目录</h2><span class="section-meta" data-chapter-meta>${this.chapters.length} 章</span></div><div class="chapter-list" data-navigation-scope="same-tab"></div><button class="detail-fold chapter-fold" type="button" data-fold-chapters aria-expanded="false" hidden>显示全部 ${this.chapters.length} 章</button></section>
                 <section class="section rating-editor"></section>
                 <section class="section detail-comments"></section>
             </div><aside class="detail-secondary">
@@ -234,13 +235,30 @@ class ChapterPage {
         const start = this.root.querySelector("[data-start-read]");
         start.href = readerUrl(selected.id, this.album.id);
         start.querySelector("span").textContent = last ? "继续阅读" : "开始阅读";
+        this.root.querySelector("[data-chapter-count]").textContent = this.chapters.length;
+        this.root.querySelector("[data-chapter-meta]").textContent = `${this.chapters.length} 章`;
         this.setChaptersExpanded(Boolean(this.chaptersExpanded));
     }
 
     async hydrateNames() {
         if (!hasMissingComicChapterNames(this.album.series)) return;
-        try { this.chapters = chaptersOf(this.album, null, (await localRuntime.getWebChapterNames(this.album.id))?.chapters); this.renderChapters(); }
-        catch { /* Numbered chapter names remain usable. */ }
+        try {
+            this.webChapters = (await localRuntime.getWebChapterNames(this.album.id))?.chapters;
+            this.chapters = chaptersOf(this.album, null, this.webChapters);
+            this.renderChapters();
+        } catch { /* Numbered chapter names remain usable. */ }
+    }
+
+    /** The album cache lasts 7 days, so a page drawn from it asks JM again and adds any new chapters. */
+    async refreshAlbum() {
+        if (!jmApi.isAlbumFromCache(this.album.id)) return;
+        const fresh = await jmApi.getComicAlbum(this.album.id, { refresh: true }).catch(() => null);
+        const ids = (album) => chaptersOf(album).map((item) => String(item.id)).join(",");
+        if (!fresh?.id || ids(fresh) === ids(this.album)) return;
+        this.album = { ...this.album, series: fresh.series };
+        this.chapters = chaptersOf(this.album, null, this.webChapters);
+        this.renderChapters();
+        this.hydrateNames();
     }
 
     async translate() {

@@ -27,6 +27,8 @@ class JmcomicApi {
     initPromise = null;
     sessionUserId = "";
     albumRequests = new Map();
+    // Albums last answered from the persistent cache, so a page can fetch a fresh copy behind them.
+    albumCacheHits = new Set();
     chapterRequests = new Map();
     accountAlbumRequests = new Map();
     favoriteIds = null;
@@ -359,6 +361,7 @@ class JmcomicApi {
                 if (!refresh) {
                     const cached = await localRuntime.readCache("album", id, 7 * 24 * 60 * 60);
                     if (cached && !Array.isArray(cached) && cached.id != null) {
+                        this.albumCacheHits.add(id);
                         return { ...cached, is_favorite: false, liked: false, purchased: "" };
                     }
                 }
@@ -372,6 +375,7 @@ class JmcomicApi {
                     maxServers,
                     timeoutMs,
                 });
+                this.albumCacheHits.delete(id);
                 localRuntime.writeCache("album", id, {
                     ...result,
                     is_favorite: false,
@@ -384,6 +388,9 @@ class JmcomicApi {
         }
         return this.albumRequests.get(requestKey);
     }
+
+    /** The last read of this album came from the persistent cache rather than JM. */
+    isAlbumFromCache(comicId) { return this.albumCacheHits.has(String(comicId ?? "").trim()); }
 
     async getComicChapter(comicId) {
         const id = String(comicId ?? "").trim();
