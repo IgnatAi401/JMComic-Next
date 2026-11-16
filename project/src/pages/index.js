@@ -245,11 +245,23 @@ const sideAuthorHtml = (item, fallback = "未知作者") => {
 const savedMeta = (item) => (item.savedAt ? formatDateTime(item.savedAt) : "");
 const sideListMarkup = new WeakMap();
 
+/* 侧栏的本地数据（资料库历史、作者订阅）都读完前保持占位，避免先收起再展开；追踪连载要联网登录，不等它。 */
+const sideWaiting = new Set(["library", "subscriptions"]);
+
+function updateSide() {
+    const side = document.querySelector(".home-side");
+    if (!sideWaiting.size) side.removeAttribute("data-pending");
+    side.hidden = !side.hasAttribute("data-pending") && [...side.querySelectorAll(".continue")].every((node) => node.hidden);
+}
+
+function sideLoaded(source) {
+    sideWaiting.delete(source);
+    updateSide();
+}
+
 function renderSideList(section, items, { removable = false, meta = savedMeta, highlight = () => false, unknownAuthor = "未知作者" } = {}) {
     section.hidden = !items.length;
-    const side = section.closest(".home-side");
-    side.removeAttribute("data-pending");
-    side.hidden = [...side.querySelectorAll(".continue")].every((node) => node.hidden);
+    updateSide();
     const html = items.map((item) => {
         const title = asText(item.name ?? item.title, "未命名作品");
         const href = detailUrl(item.id);
@@ -411,13 +423,16 @@ class HomePage {
         document.querySelector("[data-today]").textContent = new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
         await jmApi.init();
         bindWatchLater();
-        renderAuthorUpdates();
+        authorSubscriptions.ready().catch(() => {}).finally(() => {
+            renderAuthorUpdates();
+            sideLoaded("subscriptions");
+        });
         bindTracking();
         loadTracking();
         const random = new RandomPick(document.querySelector(".random"));
         // The random pick and the shelves are independent; load them side by side.
         await Promise.all([
-            libraryStore.init().catch(() => {}).finally(() => { renderWatchLater(); renderContinueReading(); }),
+            libraryStore.init().catch(() => {}).finally(() => { renderWatchLater(); renderContinueReading(); sideLoaded("library"); }),
             random.init()
                 .catch((error) => { document.querySelector("[data-random-status]").textContent = error.message || "随机历史暂时不可用"; }),
             renderShelves().catch((error) => renderPageError(".shelves", error, { title: "书架加载失败", action: null })),
