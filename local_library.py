@@ -230,6 +230,12 @@ class LocalLibrary:
             ).fetchall()
         return {"items": [{"query": row["query"], "savedAt": row["saved_at"]} for row in rows]}
 
+    def author_subscriptions_revision(self) -> int:
+        """Just the revision, for cheap polling while a check runs."""
+        with self.lock, self._connection() as connection:
+            row = connection.execute("SELECT revision FROM author_subscriptions WHERE id=1").fetchone()
+        return row["revision"] if row else 0
+
     def author_subscriptions(self, state=None, revision=None) -> dict:
         """The subscription document the browser maintains, versioned by `revision`.
 

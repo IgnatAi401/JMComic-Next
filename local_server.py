@@ -26,6 +26,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
+from author_subscriptions import SubscriptionChecker
+from daily_checkin import CheckInError, DailyCheckIn
 from local_library import LibraryError, LocalLibrary, atomic_json_write
 from title_translation import TitleTranslator, TranslationError
 
@@ -91,6 +93,12 @@ CACHE_CLEANUP_LOCK = threading.Lock()
 PROXY_DNS_CACHE_TTL = 5 * 60
 PROXY_DNS_CACHE = {}
 PROXY_DNS_CACHE_LOCK = threading.Lock()
+# Where the JM app publishes its current API lines (encrypted), and how long a fetched list is trusted.
+JM_BOOTSTRAP_URL = "https://rup4a04-c02.tos-cn-hongkong.bytepluses.com/newsvr-2025.txt"
+JM_BOOTSTRAP_SECRET = "diosfjckwpqpdfjkvnqQjsik"
+JM_BOOTSTRAP_MAX_AGE = 6 * 60 * 60
+JM_PUBLIC_MAX_LINES = 5
+jm_servers_lock = threading.Lock()
 jm_web_origin = ""
 jm_web_origin_expires = 0.0
 jm_web_origin_lock = threading.Lock()
@@ -195,16 +203,17 @@ def upstream_error_message(status: int, lines: int) -> str:
     return f"上游接口返回 HTTP {status}{tried}"
 
 
-def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
+def decrypt_jm_json(ciphertext: str, secrets_: tuple[str, ...]) -> object:
+    """AES-256-ECB with the md5 hex of each secret as key, like the JM app; None when none fits."""
     openssl = shutil.which("openssl")
     if not openssl:
-        raise JmSessionError("本机缺少 OpenSSL，无法建立账号会话")
+        raise JmSessionError("本机缺少 OpenSSL，无法解密 JM 接口数据")
     try:
         encrypted = base64.b64decode(ciphertext.strip().lstrip("\ufeff"), validate=True)
     except (ValueError, TypeError) as error:
-        raise JmSessionError("登录接口返回了无效数据") from error
-    for secret in JM_DATA_SECRETS:
-        dynamic_key = hashlib.md5(f"{timestamp}{secret}".encode("utf-8")).hexdigest().encode("ascii")
+        raise JmSessionError("JM 接口返回了无效数据") from error
+    for secret in secrets_:
+        dynamic_key = hashlib.md5(secret.encode("utf-8")).hexdigest().encode("ascii")
         try:
             result = subprocess.run(
                 [openssl, "enc", "-d", "-aes-256-ecb", "-K", dynamic_key.hex()],
@@ -217,7 +226,113 @@ def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
             return load_jm_json(result.stdout)
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
             continue
-    raise JmSessionError("登录接口数据解密失败")
+    return None
+
+
+def decrypt_jm_data(ciphertext: str, timestamp: int) -> object:
+    result = decrypt_jm_json(ciphertext, tuple(f"{timestamp}{secret}" for secret in JM_DATA_SECRETS))
+    if result is None:
+        raise JmSessionError("JM 接口数据解密失败")
+    return result
+
+
+def read_cached_servers(max_age: float | None) -> list[str]:
+    """API lines the browser or the server saved under the `bootstrap/servers` cache entry."""
+    try:
+        wrapper = json.loads((CACHE_DIR / "bootstrap" / "servers.json").read_text(encoding="utf-8"))
+        saved_at = float(wrapper.get("saved_at") or 0)
+        if max_age is not None and time.time() - saved_at > max_age:
+            return []
+        values = wrapper.get("data")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    servers = []
+    for value in values if isinstance(values, list) else []:
+        hostname = str(value or "").strip().lower()
+        if PROXY_HOST.fullmatch(hostname) and "." in hostname and hostname not in servers:
+            servers.append(hostname)
+    return servers[:12]
+
+
+def save_cached_servers(servers: list[str]) -> None:
+    atomic_json_write(CACHE_DIR / "bootstrap" / "servers.json", {"saved_at": time.time(), "data": servers[:12]})
+
+
+def fetch_jm_servers() -> list[str]:
+    request = Request(JM_BOOTSTRAP_URL, headers={"User-Agent": JM_APP_USER_AGENT})
+    with urlopen(request, timeout=20) as response:
+        raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_PROXY_RESPONSE_BYTES:
+        raise JmSessionError("API 线路列表过大")
+    text = strip_json_bom(raw).decode("utf-8", "replace").strip()
+    data = decrypt_jm_json(text, (JM_BOOTSTRAP_SECRET,))
+    values = data.get("Server") if isinstance(data, dict) else None
+    servers = []
+    for value in values if isinstance(values, list) else []:
+        hostname = str(value or "").strip().lower()
+        if PROXY_HOST.fullmatch(hostname) and "." in hostname and hostname not in servers:
+            servers.append(hostname)
+    if not servers:
+        raise JmSessionError("未获取到可用 API 线路")
+    save_cached_servers(servers)
+    return servers[:12]
+
+
+def jm_api_servers(force: bool = False) -> tuple[list[str], bool]:
+    """Current API lines and whether they came from the cache (so a failure may warrant a refetch)."""
+    with jm_servers_lock:
+        if not force:
+            cached = read_cached_servers(JM_BOOTSTRAP_MAX_AGE)
+            if cached:
+                return cached, True
+        try:
+            return fetch_jm_servers(), False
+        except (URLError, OSError, ValueError, JmSessionError) as error:
+            stale = read_cached_servers(None)
+            if stale:
+                return stale, True
+            raise JmSessionError(f"无法获取 API 线路：{error}") from error
+
+
+def jm_public_get(path: str) -> object:
+    """GET a public (no account) JM API path from the server, trying several lines; returns decrypted data."""
+    last_error: Exception | None = None
+    for attempt in range(2):
+        servers, from_cache = jm_api_servers(force=attempt > 0)
+        for server in servers[:JM_PUBLIC_MAX_LINES]:
+            timestamp = int(time.time())
+            headers = {
+                "Accept": "application/json",
+                "token": hashlib.md5(f"{timestamp}{JM_TOKEN_SECRET}".encode("utf-8")).hexdigest(),
+                "tokenParam": f"{timestamp},{JM_APP_VERSION}",
+                "User-Agent": JM_APP_USER_AGENT,
+            }
+            try:
+                validate_proxy_server(server)
+                with urlopen(Request(f"https://{server}{path}", headers=headers), timeout=20) as response:
+                    raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_PROXY_RESPONSE_BYTES:
+                    raise ValueError("响应过大")
+                envelope = load_jm_json(raw)
+                data = envelope.get("data", envelope) if isinstance(envelope, dict) else envelope
+                result = decrypt_jm_data(data, timestamp) if isinstance(data, str) else data
+                if server != servers[0]:
+                    # Keep using the line that answered, like the browser does.
+                    with jm_servers_lock:
+                        save_cached_servers([server, *[item for item in servers if item != server]])
+                return result
+            except HTTPError as error:
+                last_error = JmSessionError(upstream_error_message(error.code, 1))
+            except (URLError, OSError, ValueError, JmSessionError) as error:
+                last_error = error
+        if not from_cache:
+            break
+    raise JmSessionError(str(last_error or "所有 API 线路均请求失败"))
+
+
+def jm_search(query: str, page: int) -> object:
+    params = urlencode({"search_query": query, "o": "mr", "t": "a", "c": "0", "main_tag": "0", "page": page})
+    return jm_public_get(f"/search?{params}")
 
 
 def encode_multipart_form(fields: dict) -> tuple[bytes, str]:
@@ -365,6 +480,7 @@ class JmSessionManager:
 
 
 jm_session = JmSessionManager()
+subscription_checker = SubscriptionChecker(library, jm_search)
 
 
 def cache_files() -> list[Path]:
@@ -603,6 +719,86 @@ def save_organize_cache(key: str, result: dict, comics: object) -> None:
     LocalHandler.record_cache_write()
 
 
+def jm_checkin_login(refresh: bool) -> dict:
+    """Profile of the server's JM login session; `refresh` logs in again."""
+    servers = jm_api_servers()[0]
+    state = jm_session.refresh(servers) if refresh else jm_session.ensure(servers)
+    return state.get("user") or {}
+
+
+def jm_account_call(path: str, method: str = "GET", fields: dict | None = None) -> tuple[object, object]:
+    """Authenticated JM API request made by the server itself (no browser); returns (envelope, decrypted data).
+    Like the proxy, a GET moves to the next line after errors, a write only after a refusal (403/429)."""
+    servers = jm_api_servers()[0]
+    state = jm_session.ensure(servers)
+    payload, content_type = None, ""
+    if method == "POST":
+        values = {str(key): str(value) for key, value in (fields or {}).items()}
+        if urlparse(path).path in PROXY_MULTIPART_PATHS:
+            payload, content_type = encode_multipart_form(values)
+        else:
+            payload = urlencode(values).encode("utf-8")
+            content_type = "application/x-www-form-urlencoded;charset=UTF-8"
+    retryable = PROXY_RETRYABLE_GET_STATUSES if method == "GET" else PROXY_REFUSED_STATUSES
+
+    def line_list(first: str) -> list[str]:
+        return [first, *[item for item in servers if item != first]][:JM_PUBLIC_MAX_LINES]
+
+    lines, index, refreshed = line_list(state["server"]), 0, False
+    last_error: Exception | None = None
+    while index < len(lines):
+        server = lines[index]
+        timestamp = int(time.time())
+        headers = {
+            "Accept": "application/json",
+            "token": hashlib.md5(f"{timestamp}{JM_TOKEN_SECRET}".encode("utf-8")).hexdigest(),
+            "tokenParam": f"{timestamp},{JM_APP_VERSION}",
+            "Cookie": f"AVS={state['session']}",
+            "User-Agent": JM_APP_USER_AGENT,
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        try:
+            validate_proxy_server(server)
+            with urlopen(Request(f"https://{server}{path}", data=payload, headers=headers, method=method), timeout=20) as response:
+                raw = response.read(MAX_PROXY_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_PROXY_RESPONSE_BYTES:
+                raise ValueError("响应过大")
+            raw = strip_json_bom(raw)
+            if raw.strip() and not is_json_body(raw):
+                # e.g. "Could not connect to mysql!" with status 200: this line is broken.
+                last_error = CheckInError("接口返回了无效内容")
+                if method != "GET":
+                    break
+                index += 1
+                continue
+            # A dead session answers 200 with a blank body; report JM's usual empty result.
+            envelope = load_jm_json(raw) if raw.strip() else {"code": 200, "data": []}
+            if server != state["server"]:
+                jm_session.prefer_server(state["session"], server)
+            data = envelope.get("data", envelope) if isinstance(envelope, dict) else envelope
+            return envelope, decrypt_jm_data(data, timestamp) if isinstance(data, str) and data else data
+        except HTTPError as error:
+            if error.code == HTTPStatus.UNAUTHORIZED and not refreshed:
+                refreshed = True
+                state = jm_session.refresh_if_current(state["session"], servers)
+                lines, index = line_list(state["server"]), 0
+                continue
+            last_error = CheckInError(upstream_error_message(error.code, index + 1), error.code in PROXY_REFUSED_STATUSES)
+            if error.code not in retryable:
+                break
+        except (URLError, OSError):
+            # A write may have reached JM before the connection broke; never repeat it.
+            if method != "GET":
+                raise
+            last_error = CheckInError("账号接口暂时无法连接")
+        index += 1
+    raise last_error or CheckInError("所有 API 线路均请求失败")
+
+
+daily_checkin = DailyCheckIn(DATA_DIR / "daily_checkin.json", read_account, jm_checkin_login, jm_account_call)
+
+
 def asset_version() -> str:
     digest = hashlib.sha256()
     for name in VERSIONED_ROOTS:
@@ -733,6 +929,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/library/subscriptions":
             self.send_json(library.author_subscriptions())
             return
+        if parsed.path == "/local-api/library/subscriptions/check":
+            self.send_json(subscription_checker.status())
+            return
+        if parsed.path == "/local-api/checkin":
+            self.send_json(daily_checkin.status())
+            return
         if parsed.path == "/local-api/account":
             account = read_account()
             session_state = jm_session.snapshot()
@@ -817,6 +1019,23 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 self.send_json(library.author_subscriptions(body.get("state"), body.get("revision")))
             except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/library/subscriptions/check":
+            # Answers at once; the check runs in the background and is followed with GET.
+            names = body.get("names")
+            if names is not None and (not isinstance(names, list) or len(names) > 1000):
+                self.send_json({"error": "作者列表无效"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(subscription_checker.request(
+                names=[str(name) for name in names] if names else None,
+                everyone=body.get("all") is True,
+            ))
+            return
+        if parsed.path == "/local-api/checkin":
+            # `enabled` switches auto check-in; `run` starts a check-in in the background (follow it with GET).
+            if isinstance(body.get("enabled"), bool):
+                daily_checkin.set_enabled(body["enabled"])
+            self.send_json(daily_checkin.request() if body.get("run") is True else daily_checkin.status())
             return
         if parsed.path == "/local-api/jm-proxy":
             self.proxy_jm_request(body)
@@ -1111,6 +1330,10 @@ def main() -> None:
 
     ensure_runtime_files()
     cleanup_cache()
+    # Daily author subscription checks run here, whether or not a page is open.
+    subscription_checker.start_scheduler()
+    # Daily check-in also runs here, so it happens without any page open.
+    daily_checkin.start_scheduler()
     server = ThreadingHTTPServer((args.host, args.port), LocalHandler)
     print(f"JMComic WebUI: http://{args.host}:{args.port}/")
     print(f"账号配置: {ACCOUNT_FILE}")

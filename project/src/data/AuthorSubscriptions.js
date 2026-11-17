@@ -1,76 +1,31 @@
-import { jmApi } from "../api/JmcomicApi.js";
 import { localRuntime } from "../local/LocalRuntime.js";
-import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
+import { readLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
 
 /**
- * 作者订阅：检查新作仍在前端用公开的搜索接口完成；订阅数据存在服务器的资料库里，
- * 换设备、换访问地址都是同一份（纯前端的 Web 版仍存浏览器）。
- *
- * 判断新作：搜索结果按发布时间排序，但编号并不严格递增（补档的旧作会拿到新编号），
- * 所以同时看两条线索——更新时间晚于上次检查（留出收录延迟的余量），或编号大于见过的最大编号；
- * 再用“见过的编号”去重，同一部作品不会被反复加入。
+ * 作者订阅：订阅数据存在服务器的资料库里，换设备、换访问地址都是同一份；
+ * 检查新作由服务器在后台完成（每天自动一次，也可在这里要求立即检查），
+ * 浏览器只发起检查并短轮询进度，刷新或关闭页面都不影响后台的检查。
  */
 const API_PATH = "./local-api/library/subscriptions";
+const CHECK_PATH = "./local-api/library/subscriptions/check";
 /* 同一浏览器的其他标签页保存后写这个键，借 storage 事件通知本页重新读取。 */
 const SYNC_KEY = "jm_author_subscriptions_sync";
-const LOCK_KEY = "jm_author_subscriptions_lock";
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
-/* JM 新上传的作品要过一阵才能搜到，时间判断往前多看三天，靠“见过的编号”去重。 */
-const INDEX_LAG_MS = 3 * 24 * 60 * 60 * 1000;
-const LOCK_MS = 5 * 60 * 1000;
-const REQUEST_GAP_MS = 1500;
-const MAX_PAGES = 3;
-const MAX_SEEN = 400;
+/* 已提示过的自动检查结果（结束时间），每次结果只提示一次。 */
+const RESULT_KEY = "jm_author_subscriptions_result_seen";
+const POLL_MS = 2000;
+const POLL_RETRY_MS = 5000;
 const SAVE_RETRY_MS = [2000, 5000, 15000, 60000];
+const EMPTY_RESULT = Object.freeze({ added: 0, failed: [], checked: 0 });
 
 const now = () => Date.now();
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 名称比较时忽略全半角、大小写和多余空格。 */
 export const normalizeAuthor = (value) => String(value ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
-
-/* 作者字段常见“社团 (作者)”“A、B”“A & B”等写法，拆开后逐个比对，避免标题或标签里出现同名词时误报。 */
-const AUTHOR_SEPARATORS = /[()（）[\]【】「」、,，&＆/／|｜;；+＋]+/;
-/** 拆开后保留原样写法（用于显示别名）。 */
-const rawAuthorParts = (value) => (Array.isArray(value) ? value : [value])
-    .flatMap((item) => String(item ?? "").split(AUTHOR_SEPARATORS))
-    .map((part) => part.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-export const authorParts = (value) => rawAuthorParts(value).map(normalizeAuthor).filter(Boolean);
-
-const matchesAuthor = (item, names) => authorParts(item?.author).some((part) => names.has(part));
-
-/**
- * 标题开头的署名段，如“[社团 (作者)] 标题 (原作) [中國翻譯]”里的“社团 (作者)”。
- * 只看第一个方括号，原作名、语言标记等都不算，再按作者字段的规则逐段精确比对。
- */
-const titleByline = (title) => String(title ?? "").normalize("NFKC").match(/^\s*\[([^\]]+)\]/)?.[1] || "";
-const matchesTitle = (item, names) => authorParts(titleByline(item?.name)).some((part) => names.has(part));
 
 /** 旧版本别名是字符串数组，统一成 { name, source }。 */
 const aliasList = (value) => (Array.isArray(value) ? value : [])
     .map((item) => typeof item === "string" ? { name: item, source: "auto" } : item)
     .filter((item) => item?.name);
-
-/**
- * 订阅名和作者字段写法不同时（如“竜/龍”这类异体字，JM 搜索视为相同），一部也匹配不到；
- * 这时把搜索结果里明显占多数的作者写法记为别名。
- */
-function guessAlias(content, rejected) {
-    const counts = new Map();
-    for (const item of content) {
-        const parts = new Map(rawAuthorParts(item?.author).map((raw) => [normalizeAuthor(raw), raw]));
-        for (const [key, raw] of parts) {
-            if (rejected.has(key)) continue;
-            const entry = counts.get(key) || { raw, count: 0 };
-            entry.count += 1;
-            counts.set(key, entry);
-        }
-    }
-    const best = [...counts.values()].sort((a, b) => b.count - a.count)[0];
-    return best && best.count >= Math.max(3, content.length * 0.3) ? best.raw : "";
-}
 
 const emptyState = () => ({ version: 1, authors: [], updates: [], lastRunAt: 0, fuzzy: true });
 
@@ -87,23 +42,13 @@ function normalizeState(value) {
     };
 }
 
-const comicFromSearch = (item, source, foundAt, via) => ({
-    id: String(item.id),
-    name: String(item.name || `漫画 #${item.id}`),
-    author: authorParts(item.author).length ? [String(item.author)] : [],
-    category: item.category?.title ? { title: String(item.category.title) } : undefined,
-    updateAt: Number(item.update_at) || 0,
-    sources: [source],
-    foundAt,
-    ...(via === "title" ? { via } : {}),
-});
-
 /**
  * 改动先在本地生效（界面立即更新），再排队保存到服务器。保存时带上读到的版本号；
  * 如果其他设备或标签页先存了，服务器会退回最新数据，这里把尚未保存的改动在它上面重放一遍再存，
  * 两边的改动都不会丢。
  */
 class AuthorSubscriptions {
+    /** 后台检查进行中时是一个 Promise，结束后得到 { added, failed, checked }。 */
     running = null;
     progress = null;
     /** 最近一次保存失败的原因；保存成功后清空。 */
@@ -116,17 +61,25 @@ class AuthorSubscriptions {
     #saving = null;
     #retryTimer = 0;
     #failures = 0;
+    #checkStatus = null;
+    #waiters = [];
+    #pollTimer = 0;
+    #polling = false;
 
     constructor() {
         if (typeof window === "undefined") return;
         window.addEventListener("storage", (event) => {
             if (event.key === SYNC_KEY) this.refresh().catch(() => {});
         });
-        // 切回页面时重新读取，拿到其他设备的改动。
+        // 切回页面时重新读取，拿到其他设备的改动和后台检查的进度。
         document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === "visible") this.refresh().catch(() => {});
+            if (document.visibilityState !== "visible") return;
+            this.refresh().catch(() => {});
+            this.#poll();
         });
         this.ready().catch(() => {});
+        // 打开页面时读一次后台检查状态：检查进行中就接着显示进度。
+        this.#poll();
     }
 
     /** 第一次从服务器读取订阅；失败后下次调用会重试。 */
@@ -235,7 +188,7 @@ class AuthorSubscriptions {
             author.rejected = (author.rejected || []).filter((item) => item !== key);
             return "added";
         });
-        if (result === "added" && !this.running) this.check([authorName]).catch(() => {});
+        if (result === "added") this.check([authorName]).catch(() => {});
         return result;
     }
 
@@ -286,7 +239,8 @@ class AuthorSubscriptions {
             state.authors.push(...fresh);
             return fresh.map((item) => item.name);
         });
-        if (added.length) this.runDue().catch(() => {});
+        // 新订阅的作者马上记录已有作品（建立基准），之后每天由服务器检查。
+        if (added.length) this.check(added).catch(() => {});
         return added;
     }
 
@@ -319,151 +273,119 @@ class AuthorSubscriptions {
 
     clearUpdates() { this.#update((state) => { state.updates = []; }); }
 
-    /** 待检查的作者：还没建立基准，或距上次检查超过一天（失败后至少隔一小时再试）。 */
-    dueAuthors(state = this.#state) {
-        const time = now();
-        return state.authors.filter((item) => {
-            if (item.failedAt && time - item.failedAt < RETRY_AFTER_FAILURE_MS) return false;
-            return !item.checkedAt || time - item.checkedAt >= CHECK_INTERVAL_MS;
-        });
-    }
+    /** 手动检查全部作者（后台检查进行中时，把还没查到的作者接在后面）。 */
+    checkAll() { return this.#startCheck({ all: true }); }
 
-    /** 每天自动检查：只查到期的作者，多个标签页同时打开时只有一个在查。 */
-    async runDue() {
-        await this.ready();
-        const names = this.dueAuthors().map((item) => item.name);
-        return names.length ? this.check(names, { auto: true }) : { added: 0, failed: [], checked: 0 };
-    }
-
-    /** 手动检查全部作者。 */
-    async checkAll() {
-        await this.ready();
-        return this.check(this.authors.map((item) => item.name));
-    }
-
-    check(names, { auto = false } = {}) {
-        if (this.running) return this.running;
-        if (auto && !this.#acquireLock()) return Promise.resolve({ added: 0, failed: [], checked: 0, skipped: true });
-        if (!auto) writeLocalStorage(LOCK_KEY, String(now()));
-        this.running = this.#checkAll(names).finally(() => {
-            this.running = null;
-            this.progress = null;
-            removeLocalStorage(LOCK_KEY);
-            this.#notify();
-        });
-        return this.running;
-    }
+    /** 立即检查这些作者（新订阅、改了别名）。 */
+    check(names) { return this.#startCheck({ names }); }
 
     get isRunning() { return Boolean(this.running); }
 
-    #acquireLock() {
-        const locked = Number(readLocalStorage(LOCK_KEY, "0")) || 0;
-        if (locked && now() - locked < LOCK_MS) return false;
-        writeLocalStorage(LOCK_KEY, String(now()));
-        return true;
+    /** 先把本地改动存到服务器（服务器按存好的数据检查），再请求后台检查，返回检查结束时的结果。 */
+    #startCheck(body) {
+        const promise = (async () => {
+            await this.#settled();
+            const status = await localRuntime.request(CHECK_PATH, { method: "POST", body, timeoutMs: 15000 });
+            const wait = status.running ? this.#waitForRun(status.runId) : Promise.resolve({ ...EMPTY_RESULT });
+            this.#applyStatus(status);
+            return wait;
+        })();
+        return this.#track(promise);
     }
 
-    async #checkAll(names) {
-        const result = { added: 0, failed: [], checked: 0 };
-        for (const [index, name] of names.entries()) {
-            this.progress = { index: index + 1, total: names.length, name };
+    /** 等待尚未保存的改动存好；保存失败时不发起检查。 */
+    async #settled() {
+        await this.ready();
+        while (this.#pending.length || this.#saving) {
+            await (this.#saving || this.#save());
+            if (this.saveError && this.#pending.length) throw new Error(`订阅还没保存到服务器（${this.saveError}）`);
+        }
+    }
+
+    /** 记下进行中的检查，结束后清掉进度并通知界面。 */
+    #track(promise) {
+        this.running = promise;
+        this.#notify();
+        promise.catch(() => {}).finally(() => {
+            if (this.running !== promise) return;
+            this.running = null;
+            this.progress = null;
             this.#notify();
-            writeLocalStorage(LOCK_KEY, String(now()));
-            if (index) await sleep(REQUEST_GAP_MS);
-            try {
-                result.added += await this.#checkAuthor(name);
-                result.checked += 1;
-            } catch (error) {
-                result.failed.push(name);
-                this.#update((state) => {
-                    const author = state.authors.find((item) => normalizeAuthor(item.name) === normalizeAuthor(name));
-                    if (author) Object.assign(author, { error: error?.message || "检查失败", failedAt: now() });
-                });
-            }
-        }
-        this.#update((state) => { state.lastRunAt = now(); });
-        return result;
+        });
+        return promise;
     }
 
-    async #checkAuthor(name) {
-        const subscription = this.find(name);
-        if (!subscription) return 0;
-        let baseline = !subscription.checkedAt;
-        const seen = new Set((subscription.seen || []).map(String));
-        const since = subscription.checkedAt - INDEX_LAG_MS;
-        const startedAt = now();
-        const found = [];
-        const pageIds = [];
-        let maxId = Number(subscription.maxId) || 0;
-        const fuzzy = this.fuzzy;
-        const aliases = aliasList(subscription.aliases);
-        const rejected = new Set(subscription.rejected || []);
-        // 关闭模糊匹配时别名保留但停用，只按订阅名精确匹配作者字段。
-        const names = () => new Set([normalizeAuthor(subscription.name), ...(fuzzy ? aliases.map((item) => normalizeAuthor(item.name)) : [])]);
-        const select = (content) => content.flatMap((item) => {
-            if (!item?.id) return [];
-            if (matchesAuthor(item, names())) return [{ item, via: "author" }];
-            return fuzzy && matchesTitle(item, names()) ? [{ item, via: "title" }] : [];
+    #waitForRun(runId) {
+        return new Promise((resolve) => {
+            this.#waiters.push({ runId, resolve });
+            this.#schedulePoll(POLL_MS);
         });
+    }
 
-        for (let page = 1; page <= (baseline ? 1 : MAX_PAGES); page += 1) {
-            if (page > 1) await sleep(REQUEST_GAP_MS);
-            const response = await jmApi.getSearchResults(subscription.name, page, { order: "mr" });
-            const content = Array.isArray(response?.content) ? response.content : [];
-            let matched = select(content);
-            // 只有作者字段一部都对不上时才识别别名；标题署名匹配到的作品照收，但不拿来学习。
-            if (fuzzy && page === 1 && !matched.some((entry) => entry.via === "author")) {
-                const alias = guessAlias(content, rejected);
-                if (alias) {
-                    aliases.push({ name: alias, source: "auto" });
-                    // 换了匹配方式，已有作品从没记过，这次只当作重新建立基准。
-                    baseline = true;
-                    matched = select(content);
-                }
-            }
-            let fresh = 0;
-            for (const { item, via } of matched) {
-                const id = String(item.id);
-                pageIds.push(id);
-                if (baseline || seen.has(id)) continue;
-                const updatedAt = (Number(item.update_at) || 0) * 1000;
-                // 编号线索只在有过匹配后才用：从没对上过时 maxId 为 0，所有旧作都会被当成新作。
-                if (updatedAt > since || (maxId > 0 && Number(id) > maxId)) {
-                    found.push(comicFromSearch(item, subscription.name, startedAt, via));
-                    fresh += 1;
-                }
-            }
-            // 这一页的结果全是新作，说明可能还有更多，继续往后翻；否则到此为止。
-            if (!matched.length || fresh < matched.length || content.length < 20) break;
+    #schedulePoll(delay) {
+        if (this.#pollTimer || this.#polling) return;
+        this.#pollTimer = setTimeout(() => {
+            this.#pollTimer = 0;
+            this.#poll();
+        }, delay);
+    }
+
+    /** 读后台检查状态；进行中或有人在等结果时继续短轮询。 */
+    async #poll() {
+        if (this.#polling) return;
+        clearTimeout(this.#pollTimer);
+        this.#pollTimer = 0;
+        this.#polling = true;
+        let status = null;
+        try {
+            status = await localRuntime.request(CHECK_PATH, { timeoutMs: 10000 });
+        } catch {
+            // 网络断开时稍后再试，后台检查不受影响。
+        } finally {
+            this.#polling = false;
         }
-        for (const id of pageIds) maxId = Math.max(maxId, Number(id) || 0);
+        if (status) this.#applyStatus(status);
+        else if (this.#waiters.length || this.#checkStatus?.running) this.#schedulePoll(POLL_RETRY_MS);
+    }
 
-        return this.#update((state) => {
-            const author = this.#author(state, name);
-            if (!author) return 0;
-            // 合并检查期间用户对别名的改动（手动添加或删除），自动识别的新别名不覆盖已拒绝的。
-            const current = aliasList(author.aliases);
-            const refused = new Set(author.rejected || []);
-            for (const alias of aliases) {
-                const key = normalizeAuthor(alias.name);
-                if (!refused.has(key) && !current.some((item) => normalizeAuthor(item.name) === key)) current.push(alias);
-            }
-            author.aliases = current;
-            const known = [...new Set([...pageIds, ...(author.seen || []).map(String)])].slice(0, MAX_SEEN);
-            Object.assign(author, { checkedAt: startedAt, maxId, seen: known, error: "", failedAt: 0 });
-            let added = 0;
-            for (const comic of found) {
-                const existing = state.updates.find((item) => item.id === comic.id);
-                if (existing) {
-                    if (!existing.sources.includes(comic.sources[0])) existing.sources.push(comic.sources[0]);
-                    continue;
-                }
-                state.updates.unshift(comic);
-                added += 1;
-            }
-            state.updates.sort((a, b) => (b.updateAt || 0) - (a.updateAt || 0) || Number(b.id) - Number(a.id));
-            return added;
-        });
+    #applyStatus(status) {
+        if (!status || typeof status !== "object") return;
+        const previous = this.#checkStatus;
+        this.#checkStatus = status;
+        const last = status.lastRun;
+        // 后台每查完一位作者就保存一次；版本号变了就重新读取，新作随检查进度出现。
+        if ((Number(status.revision) || 0) > this.#revision || (last && last.id !== previous?.lastRun?.id)) {
+            this.refresh().catch(() => {});
+        }
+        // 服务器重启后旧的检查不会再结束，这时也放行等待的人。
+        const finished = (waiter) => !status.running || (last && last.id >= waiter.runId);
+        for (const waiter of this.#waiters.filter(finished)) {
+            waiter.resolve(last && last.id >= waiter.runId
+                ? { added: last.added || 0, failed: last.failed || [], checked: last.checked || 0 }
+                : { ...EMPTY_RESULT });
+        }
+        this.#waiters = this.#waiters.filter((waiter) => !finished(waiter));
+        this.#announce(last);
+        if (status.running) {
+            this.progress = status.progress || null;
+            // 打开页面时检查已在进行（别的设备或每天的自动检查发起）：同样显示进度。
+            if (!this.running) this.#track(this.#waitForRun(status.runId));
+            this.#schedulePoll(POLL_MS);
+        } else {
+            this.progress = null;
+        }
+        this.#notify();
+    }
+
+    /** 自动检查发现新作时提示一次（手动检查由发起的页面自己提示）。 */
+    #announce(last) {
+        if (!last?.finishedAt) return;
+        const seen = Number(readLocalStorage(RESULT_KEY, "0")) || 0;
+        if (last.finishedAt <= seen) return;
+        writeLocalStorage(RESULT_KEY, String(last.finishedAt));
+        // 第一次用这个版本时不提示以前的结果。
+        if (!seen || !last.auto || !last.added) return;
+        window.dispatchEvent(new CustomEvent("jm-subscriptions-result", { detail: { ...last } }));
     }
 }
 

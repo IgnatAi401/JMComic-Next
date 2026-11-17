@@ -1,6 +1,7 @@
 import { autoCheckIn } from "../auth/AutoCheckIn.js";
 import { localRuntime } from "../local/LocalRuntime.js";
 import { mountShell } from "../ui/shell.js";
+import { showToast } from "../ui/toast.js";
 import { mountReadingControls } from "../ui/reading-controls.js";
 import { PreferenceEditor } from "../ui/preference-editor.js";
 import { SubscriptionEditor } from "../ui/subscriptions.js";
@@ -10,8 +11,19 @@ mountShell();
 mountReadingControls(document.querySelector("#settings-reading"));
 
 const autoCheckInSwitch = document.querySelector("[data-auto-checkin]");
-autoCheckInSwitch.checked = autoCheckIn.enabled;
-autoCheckInSwitch.addEventListener("change", () => autoCheckIn.setEnabled(autoCheckInSwitch.checked));
+// 开关保存在服务器上，所有设备共用；读到之前先禁用，避免误操作。
+autoCheckInSwitch.disabled = true;
+autoCheckIn.status().then((state) => {
+    autoCheckInSwitch.checked = state.enabled;
+    autoCheckInSwitch.disabled = false;
+}).catch((error) => showToast(`读取自动签到设置失败：${error.message}`, "warning"));
+autoCheckInSwitch.addEventListener("change", () => {
+    const wanted = autoCheckInSwitch.checked;
+    autoCheckIn.setEnabled(wanted).catch((error) => {
+        autoCheckInSwitch.checked = !wanted;
+        showToast(`保存自动签到设置失败：${error.message}`, "warning");
+    });
+});
 
 const editors = [
     new PreferenceEditor(document.querySelector("#settings-tag-preferences"), { kind: "tag", levels: TAG_LEVELS, noun: "标签" }).mount(),

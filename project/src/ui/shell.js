@@ -309,26 +309,26 @@ class AppShell {
         this.nav?.querySelector("[data-open-account]")?.setAttribute("aria-label", configured ? `账号配置，已配置 ${name}` : "账号配置，尚未配置");
     }
 
-    /** First visit of the day: check in silently in the background once the account config is known. */
+    /** 服务器每天自动签到；这里只把这台设备还没提示过的自动签到结果提示一次（“今天已签到”不打扰）。 */
     scheduleAutoCheckIn() {
-        if (!autoCheckIn.enabled) return;
-        const run = () => authSession.loadLocalConfig().then(() => {
-            if (authSession.isConfigured && autoCheckIn.shouldRun(authSession.configuredUsername)) return this.checkIn({ auto: true });
+        const run = () => autoCheckIn.unseenAutoResult().then((result) => {
+            if (!result || result.status === "already") return;
+            if (result.status === "success") showToast(`已自动签到：${result.message.replace(/^签到成功[：:]?\s*/, "") || "签到成功"}`, "success");
+            else showToast(`自动签到失败：${result.message}`, "warning");
         }).catch(() => {});
         if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 3000 });
         else setTimeout(run, 1000);
     }
 
-    /** 每天一次的作者订阅检查：页面空闲后在后台进行，有新作时提示一次。 */
+    /** 作者订阅由服务器每天检查；自动检查发现新作时在这里提示一次。 */
     scheduleSubscriptionCheck() {
-        const run = () => authorSubscriptions.runDue().then((result) => {
-            if (result?.added) showToast(`作者订阅：发现 ${result.added} 部新作`, "success");
-        }).catch(() => {});
-        if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 5000 });
-        else setTimeout(run, 2000);
+        window.addEventListener("jm-subscriptions-result", (event) => {
+            showToast(`作者订阅：发现 ${event.detail.added} 部新作`, "success");
+        });
+        authorSubscriptions.ready().catch(() => {});
     }
 
-    async checkIn({ auto = false } = {}) {
+    async checkIn() {
         if (this.checkingIn) return;
         this.checkingIn = true;
         const labels = [...document.querySelectorAll("[data-checkin-label]")];
@@ -336,33 +336,17 @@ class AppShell {
         const original = labels.map((label) => label.textContent);
         labels.forEach((label) => { label.textContent = "签到中…"; });
         buttons.forEach((button) => { button.disabled = true; });
-        if (auto) autoCheckIn.markAttempt();
         try {
             await authSession.loadLocalConfig();
             if (!authSession.isConfigured) {
-                if (auto) return;
                 this.openAccount();
                 throw new Error("请先配置账号和密码");
             }
-            const username = authSession.configuredUsername;
-            const user = await authSession.loginFromLocalConfig();
-            const result = await jmApi.dailyCheckIn(user?.uid);
-            if (result.status === "success" || result.status === "already") autoCheckIn.markDone(username);
-            /* 自动签到时“今天已签到”不打扰用户。 */
-            if (auto && result.status === "already") return;
-            const message = result.message || "签到结果未确认";
-            showToast(auto ? `已自动签到：${message.replace(/^签到成功[：:]?\s*/, "") || "签到成功"}` : message, result.status === "success" ? "success" : result.status === "already" ? "default" : "warning");
+            const result = await autoCheckIn.run();
+            const tone = result.status === "success" ? "success" : result.status === "already" ? "default" : "warning";
+            showToast(result.message || "签到结果未确认", tone);
         } catch (error) {
-            const message = error.message || "签到失败，请稍后重试";
-            if (!auto) {
-                showToast(message, "warning");
-                return;
-            }
-            const refused = error.status === 403 || error.status === 429 || /HTTP (?:403|429)/.test(message);
-            const willRetry = authSession.configuredUsername
-                ? autoCheckIn.markFailure(authSession.configuredUsername, { refused })
-                : true;
-            showToast(`自动签到失败：${message}${willRetry ? "" : "。今天不再自动重试，可稍后手动签到"}`, "warning");
+            showToast(error.message || "签到失败，请稍后重试", "warning");
         } finally {
             this.checkingIn = false;
             labels.forEach((label, index) => { label.textContent = original[index]; });
