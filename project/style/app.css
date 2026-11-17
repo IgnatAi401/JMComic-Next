@@ -1006,7 +1006,9 @@ a.group-row:active, button.group-row:active { background: var(--active); }
     border-radius: var(--r-sm);
     background: var(--surface-2);
     isolation: isolate;
-    transition: transform var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease);
+    /* A slow, settling lift: long ease-out so the cover glides up and back instead of jumping. */
+    transition: transform 420ms var(--ease-out), box-shadow 420ms var(--ease-out);
+    backface-visibility: hidden;
 }
 .cover::after {
     content: "";
@@ -1055,9 +1057,9 @@ a.group-row:active, button.group-row:active { background: var(--active); }
     font: 600 11px/1.4 var(--font-mono);
 }
 @media (hover: hover) {
-    a.cover:hover, .comic-card:hover .cover { transform: translateY(-3px); box-shadow: var(--shadow-2); }
+    a.cover:hover, .comic-card:hover .cover { transform: translate3d(0, -2px, 0); box-shadow: 0 10px 24px -12px rgba(0, 0, 0, 0.7), 0 2px 6px -2px rgba(0, 0, 0, 0.35); }
 }
-a.cover:active { transform: scale(0.98); }
+a.cover:active { transform: scale(0.98); transition-duration: var(--t-fast); }
 
 .comic-title {
     display: -webkit-box;
