@@ -66,16 +66,17 @@ export function renderOnline(root = document) {
 export const onlineHtml = (className = "") => `<span class="community-online ${className}" data-community-online hidden title="当前在线人数（匿名统计）"><i aria-hidden="true"></i><b data-online-count></b><span class="community-online-label">人在线</span></span>`;
 
 /**
- * The detail page's "推荐" button. It stays hidden until the community service answers,
- * so a switched-off or unreachable service leaves the page exactly as before.
+ * The detail page's "推荐" button. It is always shown; its state loads quietly in the
+ * background, and only a click reports a switched-off or unreachable service.
  */
 export class RecommendButton {
     constructor(container, albumId) {
         this.albumId = String(albumId);
+        this.item = null;
         this.button = document.createElement("button");
         this.button.type = "button";
         this.button.className = "btn btn-outline community-recommend";
-        this.button.hidden = true;
+        this.button.setAttribute("aria-pressed", "false");
         this.button.innerHTML = `${icon("flame")}<span>推荐</span>`;
         container.append(this.button);
         this.button.addEventListener("click", () => this.click());
@@ -85,8 +86,10 @@ export class RecommendButton {
     async load() {
         try {
             this.render(await communityApi.comic(this.albumId));
-        } catch {
-            this.button.hidden = true;
+            return true;
+        } catch (error) {
+            this.lastError = error;
+            return false;
         }
     }
 
@@ -94,31 +97,38 @@ export class RecommendButton {
         this.item = item;
         const mine = Boolean(item?.mine?.recommended);
         const count = Number(item?.recommenders) || 0;
-        this.button.hidden = false;
         this.button.setAttribute("aria-pressed", String(mine));
         this.button.querySelector("span").textContent = mine ? `已推荐 · ${count}` : count ? `推荐 · ${count}` : "推荐";
         this.button.title = mine ? `你已推荐，共 ${count} 人推荐` : count ? `已有 ${count} 人推荐` : "推荐到社区推荐页";
     }
 
     async click() {
-        if (this.busy || !this.item) return;
-        if (this.item.mine?.recommended) {
-            showToast("已经推荐过了，推荐不能撤销");
-            return;
-        }
-        const ok = await confirmAction({
-            title: "推荐这本到社区？",
-            message: "推荐完全匿名，会出现在“社区推荐”页供大家投票。提交后不能撤销。",
-            label: "推荐",
-        });
-        if (!ok) return;
+        if (this.busy) return;
         this.busy = true;
         this.button.classList.add("is-busy");
         try {
+            // The background load may have failed or still be running: ask once more now.
+            if (!this.item && !(await this.load())) {
+                showToast(this.lastError?.disabled ? "社区功能已关闭，可在设置中开启" : this.lastError?.message || "暂时无法连接服务器，请稍后再试", "warning");
+                return;
+            }
+            if (this.item.mine?.recommended) {
+                showToast("已经推荐过了，推荐不能撤销");
+                return;
+            }
+            this.button.classList.remove("is-busy");
+            const ok = await confirmAction({
+                title: "推荐这本到社区？",
+                message: "推荐完全匿名，会出现在“社区推荐”页供大家投票。提交后不能撤销。",
+                label: "推荐",
+                tone: "primary",
+            });
+            if (!ok) return;
+            this.button.classList.add("is-busy");
             this.render(await communityApi.recommend(this.albumId));
             showToast("已推荐到社区", "success");
         } catch (error) {
-            showToast(`推荐失败：${error.message}`, "warning");
+            showToast(error?.disabled ? "社区功能已关闭，可在设置中开启" : `推荐失败：${error.message}`, "warning");
         } finally {
             this.busy = false;
             this.button.classList.remove("is-busy");

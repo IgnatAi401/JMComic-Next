@@ -214,6 +214,9 @@ body[data-page="history-migration"] { --nav-w: 0px; --tabbar-h: 0px; }
     .detail-actions > .btn-primary { min-height: 48px; }
     /* Four account toggles share the row: smaller type keeps “已在稍后再看” on one line. */
     .detail-toggles:has(> :nth-child(4)) > .btn { padding-inline: 4px; font-size: 12px; }
+    /* Lower tiles on phones: icon over label, tighter spacing. */
+    .detail-toggles > .btn { min-height: 48px; padding-block: 5px; gap: 2px; }
+    .detail-toggles > .btn svg { width: 18px; height: 18px; }
 }
 /* Below the two-column detail layout (phones, tablets, iPad landscape) long chapter lists fold. */
 @media (max-width: 1279px) {
