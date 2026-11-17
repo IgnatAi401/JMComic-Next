@@ -37,6 +37,8 @@ PROJECT_DIR = ROOT_DIR / "project"
 DATA_DIR = PROJECT_DIR / "data"
 CACHE_DIR = PROJECT_DIR / ".runtime-cache" / "api"
 ACCOUNT_FILE = DATA_DIR / "account.json"
+# 社区功能（在线人数、社区推荐）的匿名随机 ID 和开关；ID 与账号无关。
+COMMUNITY_FILE = DATA_DIR / "community.json"
 library = LocalLibrary(DATA_DIR)
 translator = TitleTranslator(DATA_DIR / "translation.json")
 
@@ -127,6 +129,30 @@ def read_account() -> dict[str, str]:
         "username": str(data.get("username") or ""),
         "password": str(data.get("password") or ""),
     }
+
+
+community_lock = threading.Lock()
+
+
+def community_state(enabled: object = None) -> dict:
+    """Read (and create on first use) the anonymous community ID; `enabled` saves the switch."""
+    with community_lock:
+        try:
+            data = json.loads(COMMUNITY_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        client_id = data.get("client_id")
+        state = {
+            "client_id": client_id if isinstance(client_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{16,64}", client_id) else secrets.token_urlsafe(18),
+            "enabled": data.get("enabled") is not False,
+        }
+        if isinstance(enabled, bool):
+            state["enabled"] = enabled
+        if state != data:
+            atomic_json_write(COMMUNITY_FILE, state)
+        return state
 
 
 class JmSessionError(RuntimeError):
@@ -926,6 +952,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/local-api/search-history":
             self.send_json(library.search_history())
             return
+        if parsed.path == "/local-api/community":
+            self.send_json(community_state())
+            return
         if parsed.path == "/local-api/library/subscriptions":
             self.send_json(library.author_subscriptions())
             return
@@ -1007,6 +1036,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 self.send_json(library.set_preference(body))
             except LibraryError as error:
                 self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/local-api/community":
+            if not isinstance(body.get("enabled"), bool):
+                self.send_json({"error": "enabled 必须是 true 或 false"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(community_state(body["enabled"]))
             return
         if parsed.path == "/local-api/search-history":
             try:

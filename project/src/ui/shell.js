@@ -11,12 +11,14 @@ import { Sheet } from "./overlay.js";
 import { mountReadingControls } from "./reading-controls.js";
 import { attachSearchHistory, mountSearchHistorySection } from "./search-history.js";
 import { showToast } from "./toast.js";
+import { onlineHtml, presence, renderOnline } from "./community.js";
 
 /* Information architecture. `rail` is the short label used on the iPad-portrait rail. */
 const PRIMARY = [
     { page: "index", label: "发现", rail: "发现", icon: "discover" },
     { page: "latest", label: "最新更新", rail: "最新", icon: "latest" },
     { page: "categories", label: "分类浏览", rail: "分类", icon: "categories" },
+    { page: "recommend", label: "社区推荐", rail: "推荐", icon: "flame" },
 ];
 const PERSONAL = [
     { page: "library", label: "书架", rail: "书架", icon: "library" },
@@ -59,6 +61,7 @@ class AppShell {
         }
         this.scheduleAutoCheckIn();
         this.scheduleSubscriptionCheck();
+        presence.start();
         return this;
     }
 
@@ -86,6 +89,7 @@ class AppShell {
                 ${PERSONAL.map((item) => navLink(item, current)).join("")}
             </div>
             <div class="nav-footer">
+                ${onlineHtml("nav-online")}
                 <button class="nav-item" type="button" data-open-reading aria-label="图片线路与加载">${icon("source")}<span class="nav-item-label" data-source-label>图源 1</span><span class="nav-item-short" aria-hidden="true">图源</span></button>
                 <button class="nav-item" type="button" data-checkin aria-label="每日签到">${icon("checkin")}<span class="nav-item-label" data-checkin-label>每日签到</span><span class="nav-item-short" aria-hidden="true">签到</span></button>
                 ${navLink({ page: "setting", label: "设置", rail: "设置", icon: "settings" }, current)}
@@ -111,8 +115,10 @@ class AppShell {
                     <button class="nav-item" type="button" data-checkin>${icon("checkin")}<span data-checkin-label>每日签到</span></button>
                     <button class="nav-item" type="button" data-open-account>${icon("user")}<span data-account-name>账号</span></button>
                 </div>
+                ${onlineHtml("mobile-online")}
             </nav>`;
         document.body.prepend(nav, mobileHeader);
+        renderOnline();
         this.nav = nav;
         const menuToggle = mobileHeader.querySelector("[data-toggle-menu]");
         const menu = mobileHeader.querySelector(".mobile-navigation");
@@ -254,6 +260,7 @@ class AppShell {
                         <button class="action-tile" type="button" data-checkin>${icon("checkin")}<span data-checkin-label>每日签到</span></button>
                         ${tile("setting", "设置", "settings")}
                         ${tile("categories", "分类浏览", "categories")}
+                        ${tile("recommend", "社区推荐", "flame")}
                     </div>
                 </div>
                 <div class="sheet-section">

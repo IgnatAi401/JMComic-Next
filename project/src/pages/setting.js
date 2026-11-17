@@ -1,5 +1,6 @@
 import { autoCheckIn } from "../auth/AutoCheckIn.js";
 import { localRuntime } from "../local/LocalRuntime.js";
+import { communityIdentity } from "../community/identity.js";
 import { mountShell } from "../ui/shell.js";
 import { showToast } from "../ui/toast.js";
 import { mountReadingControls } from "../ui/reading-controls.js";
@@ -23,6 +24,24 @@ autoCheckInSwitch.addEventListener("change", () => {
         autoCheckInSwitch.checked = !wanted;
         showToast(`保存自动签到设置失败：${error.message}`, "warning");
     });
+});
+
+const communitySwitch = document.querySelector("[data-community-enabled]");
+communitySwitch.disabled = true;
+communityIdentity.get().then((state) => {
+    communitySwitch.checked = state.enabled;
+    communitySwitch.disabled = false;
+}).catch((error) => showToast(`读取社区设置失败：${error.message}`, "warning"));
+communitySwitch.addEventListener("change", () => {
+    const wanted = communitySwitch.checked;
+    communitySwitch.disabled = true;
+    communityIdentity.setEnabled(wanted)
+        .then(() => showToast(wanted ? "已开启社区功能" : "已关闭社区功能"))
+        .catch((error) => {
+            communitySwitch.checked = !wanted;
+            showToast(`保存社区设置失败：${error.message}`, "warning");
+        })
+        .finally(() => { communitySwitch.disabled = false; });
 });
 
 const editors = [
