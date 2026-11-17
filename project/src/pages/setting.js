@@ -4,6 +4,7 @@ import { communityIdentity } from "../community/identity.js";
 import { mountShell } from "../ui/shell.js";
 import { showToast } from "../ui/toast.js";
 import { mountReadingControls } from "../ui/reading-controls.js";
+import { openOnlineStats } from "../ui/online-stats.js";
 import { PreferenceEditor } from "../ui/preference-editor.js";
 import { SubscriptionEditor } from "../ui/subscriptions.js";
 import { AUTHOR_LEVELS, TAG_LEVELS, preferenceMaps } from "../ui/preferences.js";
@@ -43,6 +44,9 @@ communitySwitch.addEventListener("change", () => {
         })
         .finally(() => { communitySwitch.disabled = false; });
 });
+
+const statsButton = document.querySelector("[data-open-online-stats]");
+statsButton.addEventListener("click", () => openOnlineStats(statsButton));
 
 const editors = [
     new PreferenceEditor(document.querySelector("#settings-tag-preferences"), { kind: "tag", levels: TAG_LEVELS, noun: "标签" }).mount(),

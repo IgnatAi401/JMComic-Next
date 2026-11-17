@@ -55,7 +55,8 @@ class CommunityApi {
         fetch(url, { method: "POST", body, keepalive: true, credentials: "omit", headers: { "Content-Type": "text/plain;charset=UTF-8" } }).catch(() => {});
     }
 
-    stats(hours = 24 * 7) { return this.request(`/stats?hours=${hours}`); }
+    /** `range` is "day", "week" or "month" (also "all" on the server). */
+    stats(range = "day") { return this.request(`/stats?range=${encodeURIComponent(range)}`); }
 
     /** `sort` is "hot", "new" or "top"; every item carries `mine` for this client. */
     list(sort = "hot", page = 1) {

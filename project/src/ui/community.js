@@ -1,24 +1,44 @@
 import { communityApi } from "../community/CommunityApi.js";
+import { readLocalStorage, removeLocalStorage, writeLocalStorage } from "../utils/BrowserStorage.js";
 import { confirmAction } from "./confirm.js";
 import { escapeHtml } from "./dom.js";
 import { icon } from "./icons.js";
+import { openOnlineStats } from "./online-stats.js";
 import { Sheet } from "./overlay.js";
 import { showToast } from "./toast.js";
 
 const HEARTBEAT_MS = 60 * 1000;
+// The last count is kept so the next page shows it at once instead of popping in after
+// the first heartbeat; it is trusted for as long as the server would still count us.
+const CACHE_KEY = "jm_community_online";
+const CACHE_MS = 150 * 1000;
+
+function cachedOnline() {
+    try {
+        const { online, at } = JSON.parse(readLocalStorage(CACHE_KEY) || "null") || {};
+        return Number.isFinite(online) && Date.now() - at < CACHE_MS ? online : null;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Online presence: one short heartbeat a minute while the page is visible. A hidden page
  * simply stops (the server forgets it after 150 s); closing the page says goodbye at once.
- * Elements marked `data-community-online` show the count and stay hidden while it is unknown.
+ * Elements marked `data-community-online` show the count, stay hidden while it is unknown,
+ * and open the history sheet when clicked.
  */
 class Presence {
     started = false;
-    online = null;
+    online = cachedOnline();
 
     start() {
         if (this.started || typeof document === "undefined") return;
         this.started = true;
+        document.addEventListener("click", (event) => {
+            const opener = event.target.closest("[data-community-online]");
+            if (opener) openOnlineStats(opener);
+        });
         document.addEventListener("visibilitychange", () => {
             if (document.hidden) clearTimeout(this.timer);
             else this.beat();
@@ -48,6 +68,8 @@ class Presence {
 
     publish(count) {
         this.online = Number.isFinite(count) ? count : null;
+        if (this.online == null) removeLocalStorage(CACHE_KEY);
+        else writeLocalStorage(CACHE_KEY, JSON.stringify({ online: this.online, at: Date.now() }));
         renderOnline();
         window.dispatchEvent(new CustomEvent("jm-community-online", { detail: { online: this.online } }));
     }
@@ -64,7 +86,7 @@ export function renderOnline(root = document) {
     });
 }
 
-export const onlineHtml = (className = "") => `<span class="community-online ${className}" data-community-online hidden title="当前在线人数（匿名统计）"><i aria-hidden="true"></i><b data-online-count></b><span class="community-online-label">人在线</span></span>`;
+export const onlineHtml = (className = "") => `<button type="button" class="community-online ${className}" data-community-online hidden title="当前在线人数（匿名统计），点击查看历史" aria-haspopup="dialog"><i aria-hidden="true"></i><b data-online-count></b><span class="community-online-label">人在线</span></button>`;
 
 /**
  * The detail page's "推荐" button. It is always shown; its state loads quietly in the
