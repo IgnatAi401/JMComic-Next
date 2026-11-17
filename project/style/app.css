@@ -1007,7 +1007,7 @@ a.group-row:active, button.group-row:active { background: var(--active); }
     background: var(--surface-2);
     isolation: isolate;
     /* A slow, settling lift: long ease-out so the cover glides up and back instead of jumping. */
-    transition: transform 420ms var(--ease-out), box-shadow 420ms var(--ease-out);
+    transition: transform 700ms var(--ease-out), box-shadow 700ms var(--ease-out);
     backface-visibility: hidden;
 }
 .cover::after {
